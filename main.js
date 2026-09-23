@@ -936,7 +936,7 @@ function buildSky() {
         vis *= 1.0 - uOver * 0.97;
         col += sunColor * (pow(sd, 1800.0) * 40.0 + pow(sd, 90.0) * 0.5 + pow(sd, 7.0) * 0.28) * vis;
         // hazy warm band along horizon on the sun side
-        col += sunColor * pow(1.0 - abs(h), 12.0) * pow(sd, 2.0) * 0.35 * vis;
+        col += sunColor * pow(clamp(1.0 - abs(h), 0.0, 1.0), 12.0) * pow(sd, 2.0) * 0.35 * vis;
         if (h > -0.02) {
           vec2 uv = d.xz / (h + 0.14);
           uv = uv * 0.8 + vec2(uTime * 0.006, uTime * 0.002);
@@ -2119,7 +2119,7 @@ function buildInterior() {
       void main(){
         float e = 1.0 - smoothstep(0.55, 1.0, min(abs(vXY.x), abs(vXY.y)));
         float n = 0.7 + 0.3 * sin(vW.x * 0.8 + vW.z * 0.6 + uTime * 0.25) * sin(vW.y * 1.1 - uTime * 0.17);
-        float a = uStr * smoothstep(0.05, 0.3, vFace) * pow(1.0 - vZ, 1.4) * e * n * smoothstep(0.0, 0.03, vZ);
+        float a = uStr * smoothstep(0.05, 0.3, vFace) * pow(clamp(1.0 - vZ, 0.0, 1.0), 1.4) * e * n * smoothstep(0.0, 0.03, vZ);
         gl_FragColor = vec4(uColor, a);
       }`,
   });
@@ -2188,6 +2188,7 @@ function buildInterior() {
       for (const m of glassMats) { m.emissiveIntensity = glow; m.emissive.copy(skyTint); }
       shaftMat.uniforms.uLight.value.copy(sunDir).negate();
       shaftMat.uniforms.uStr.value = sunUp ? (sunLight.intensity / 3.4) * 0.09 : 0;
+      shaftMat.visible = shaftMat.uniforms.uStr.value > 0.002;
       shaftMat.uniforms.uColor.value.copy(sunLight.color);
       dustMat.uniforms.uAmt.value = 0.25 + 0.5 * state.dayK * (1 - ov);
       const nightBoost = 0.45 + 0.55 * (1 - state.dayK);
@@ -2219,6 +2220,15 @@ const composer = new EffectComposer(renderer, rt);
 composer.setSize(window.innerWidth, window.innerHeight);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
+// safety net: a NaN/Inf pixel would be smeared into a black square by the bloom blur
+composer.addPass(new ShaderPass({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+    void main(){ vec4 c = texture2D(tDiffuse, vUv);
+      if (any(isnan(c)) || any(isinf(c))) c = vec4(0.0, 0.0, 0.0, 1.0);
+      gl_FragColor = vec4(min(c.rgb, vec3(64.0)), c.a); }`,
+}));
 const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.55, 0.92);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
