@@ -82,6 +82,7 @@
         <span class="val" id="windLabel">そよ風</span>
       </div>
       <div class="btns">
+        <button id="btnWalk" class="walk" title="地上に降りて歩き回ります">散策</button>
         <button id="btnCam" class="on" title="しばらく操作しないとゆっくり周遊します">周遊</button>
         <button id="btnFlow" title="時間がゆっくり流れます">時の流れ</button>
         <button id="btnLeaves" class="on">落ち葉</button>
@@ -93,6 +94,16 @@
     <div id="credit">Created by Claude · Opus 5.5</div>
     <div id="hint">ドラッグで見回す ・ ホイールで寄る ・ クリックで風を起こす ・ <kbd>H</kbd> でUIを隠す</div>
   </div>
+
+  <div id="walkHud">
+    <div id="crosshair"></div>
+    <div id="prompt"></div>
+    <div id="walkTip">WASD・矢印で移動 ／ マウスで見回す ／ Shiftで走る ／ Escでカーソルを戻す</div>
+    <button id="btnExitWalk">散策をやめる</button>
+    <div id="joy"><i></i></div>
+  </div>
+  <div id="placeToast"></div>
+  <div id="fade"></div>
 
   <script type="module" src="main.js"></script>
 </body>

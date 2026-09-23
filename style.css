@@ -225,7 +225,98 @@ kbd {
   pointer-events: none;
 }
 
+/* ---------- walking ---------- */
+#fade {
+  position: fixed; inset: 0; z-index: 15;
+  background: #0b0806;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.5s ease;
+}
+#fade.on { opacity: 1; }
+#walkHud { display: none; }
+body.walking #walkHud { display: block; }
+body.walking #hint, body.walking #title p { display: none; }
+#crosshair {
+  position: fixed; left: 50%; top: 50%;
+  width: 4px; height: 4px; margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: rgba(255, 240, 210, 0.7);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+#prompt {
+  position: fixed; left: 50%; top: 58%;
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  font-size: 14px; letter-spacing: 0.12em;
+  color: var(--ink);
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  opacity: 0; transition: opacity 0.4s;
+  pointer-events: none;
+}
+#prompt.on { opacity: 1; }
+#walkTip {
+  position: fixed; left: 50%; top: 22px;
+  transform: translateX(-50%);
+  font-size: 12px; letter-spacing: 0.08em;
+  color: var(--ink-dim);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  transition: opacity 1s;
+  white-space: nowrap;
+}
+#walkTip.dim { opacity: 0.35; }
+#btnExitWalk {
+  position: fixed; left: 36px; bottom: 28px;
+  font-family: inherit; font-size: 13px; letter-spacing: 0.1em;
+  padding: 8px 16px;
+  color: var(--ink);
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+#joy {
+  display: none;
+  position: fixed; left: 28px; bottom: 90px;
+  width: 130px; height: 130px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(24, 18, 12, 0.3);
+  touch-action: none;
+}
+#joy i {
+  position: absolute; left: 50%; top: 50%;
+  width: 52px; height: 52px; margin: -26px 0 0 -26px;
+  border-radius: 50%;
+  background: rgba(227, 183, 101, 0.55);
+  box-shadow: 0 0 16px rgba(227, 150, 60, 0.4);
+}
+@media (pointer: coarse) {
+  #joy { display: block; }
+  #walkTip { white-space: normal; width: 80%; text-align: center; top: 68px; }
+  body.walking #panel { display: none; }
+}
+#placeToast {
+  position: fixed; left: 50%; top: 34%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  opacity: 0; transition: opacity 1.2s ease;
+  pointer-events: none; z-index: 16;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.8);
+}
+#placeToast.on { opacity: 1; }
+#placeToast { white-space: nowrap; }
+#placeToast b { display: block; font-size: clamp(22px, 7vw, 30px); font-weight: 600; letter-spacing: 0.4em; margin-right: -0.4em; }
+#placeToast span { display: block; margin-top: 6px; font-family: "Cormorant Garamond", serif; font-style: italic; font-size: 16px; letter-spacing: 0.15em; color: var(--ink-dim); }
+.btns button.walk { border-color: rgba(227, 183, 101, 0.55); }
+body.walking #scene { cursor: crosshair; }
+
 @media (max-width: 640px) {
+  #btnExitWalk { left: auto; right: 16px; bottom: 24px; }
   #credit { top: auto; bottom: 8px; right: 16px; font-size: 11px; }
   #title { top: 18px; left: 16px; }
   #title h1 { font-size: 24px; }

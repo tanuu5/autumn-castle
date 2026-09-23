@@ -6,6 +6,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /* =====================================================================
    utilities
@@ -431,8 +432,12 @@ let sunLight, moonLight, hemi, skyU, skyScene, pmrem, envRT;
 let glassMat, lampMat, ghGlassMat, fogColor = new THREE.Color();
 const pointLights = []; const flames = []; const birds = []; const mists = []; const flags = [];
 let fallingLeaves;
+let interior = null;
 const leafSpawnPoints = [];
 let materials = {};
+const TX = {}; // textures shared with the interior
+// collision data for first-person walking outside
+const WALK = { outlineR: null, rails: [], circles: [], trunks: [] };
 
 // castle layout constants
 const CX = -8, CZ = -12, PRX = 58, PRZ = 44; // plateau
@@ -455,6 +460,7 @@ async function build() {
   const barkTex = makeBarkTexture();
   const leafTex = makeLeafClusterTexture();
   const oneLeafTex = makeSingleLeafTexture();
+  Object.assign(TX, { stone: stoneTex, bump: stoneBump, pave: paveTex, leaf: leafTex, bark: barkTex });
   setProgress(0.2); await nextFrame();
 
   const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTex, bumpMap: stoneBump, bumpScale: 0.6, roughness: 0.92, color: 0xf4e6c8 });
@@ -496,6 +502,7 @@ async function build() {
   setProgress(0.4); await nextFrame();
   const plateau = buildRock({ cx: CX, cz: CZ, rx: PRX, rz: PRZ, H: 95, seed: 3, flare: 0.28 });
   const pillar = buildRock({ cx: OV.x, cz: OV.z, rx: 11.5, rz: 11.5, H: 95, seed: 9, flare: 0.5 });
+  WALK.outlineR = plateau.outlineR;
   // grass on top of plateau
   {
     const shape = new THREE.Shape(plateau.outline.map((p) => new THREE.Vector2(p.x, -p.z)));
@@ -757,6 +764,7 @@ async function build() {
   const balusters = [];
   const lampSpots = [];
   const railSeg = (a, c) => {
+    WALK.rails.push([a.x, a.z, c.x, c.z]);
     const L = a.distanceTo(c), ry = Math.atan2(c.x - a.x, c.z - a.z);
     const mx = (a.x + c.x) / 2, mz = (a.z + c.z) / 2;
     decor.add(new THREE.BoxGeometry(0.36, 0.16, L), trimMat, M(mx, 0.86 + a.y, mz, ry));
@@ -819,6 +827,7 @@ async function build() {
   }
   // lanterns
   lampSpots.forEach((p, i) => {
+    WALK.circles.push([p.x, p.z, 0.45]);
     const hPost = 2.3;
     decor.add(new THREE.CylinderGeometry(0.06, 0.09, hPost, 8), ironMat, M(p.x, p.y + hPost / 2, p.z));
     decor.add(new THREE.BoxGeometry(0.4, 0.5, 0.4), lampMat, M(p.x, p.y + hPost + 0.25, p.z));
@@ -832,8 +841,10 @@ async function build() {
   });
   // braziers flanking the portal
   const flameTex = makeGlowTexture('rgba(255,245,210,1)', 'rgba(255,140,40,0.75)', 1.6);
+  TX.flame = flameTex;
   for (const bx of [bayX - 5.2, bayX + 5.2]) {
     const bz = bayZf + 2.2;
+    WALK.circles.push([bx, bz, 0.8]);
     decor.add(new THREE.BoxGeometry(0.9, 1.2, 0.9), trimMat, M(bx, 0.6, bz));
     const bowl = [[0.1, 0], [0.45, 0.15], [0.62, 0.45], [0.66, 0.55]].map(([x, y]) => new THREE.Vector2(x, y));
     decor.add(new THREE.LatheGeometry(bowl, 16), ironMat, M(bx, 1.2, bz), 'scale', [1, 1]);
@@ -850,6 +861,7 @@ async function build() {
 
   // flags
   const flagTex = makeFlagTexture();
+  TX.flag = flagTex;
   const flagMat = new THREE.MeshStandardMaterial({ map: flagTex, side: THREE.DoubleSide, roughness: 0.85 });
   flagMat.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = U.uTime; sh.uniforms.uWind = U.uWind;
@@ -1332,7 +1344,7 @@ function buildTrees(barkTex, leafTex, plateau, pillar) {
   ];
   for (const [x, z, t, s] of spots) addNear(x, z, t, s * (0.9 + r() * 0.2));
   // shrubs along the facade and forecourt
-  for (let i = 0; i < 26; i++) addNear(lerp(-26, 12, r()), lerp(4.8, 6.8, r()), 3, 0.7 + r() * 0.5);
+  for (let i = 0; i < 26; i++) { const sx = lerp(-26, 12, r()), sz = lerp(4.8, 6.8, r()); if (Math.abs(sx + 6) > 8.2) addNear(sx, sz, 3, 0.7 + r() * 0.5); }
   for (let i = 0; i < 14; i++) addNear(lerp(-20, 4, r()), 25.6 + r() * 1.2, 3, 0.8 + r() * 0.4);
 
   const blocked = (x, z) => {
@@ -1396,6 +1408,7 @@ function buildTrees(barkTex, leafTex, plateau, pillar) {
     im.computeBoundingSphere();
     scene.add(im); return im;
   };
+  for (const o of [...near.filter((o) => o.t < 3), ...cons.slice(0, 5)]) if (o.y > -1) WALK.trunks.push([o.x, o.z, 0.45 * o.s]);
   nearT.forEach((tpl, ti) => {
     const items = near.filter((o) => o.t === ti);
     registerSeasonal(instance(tpl.leaves, leafMat, items, true, leafDepth), ti === 3);
@@ -1456,6 +1469,7 @@ function setSeason(key, instant = false) {
   document.querySelector('#title h1').textContent = `${S.name}ノ古城`;
   document.querySelector('#title p').textContent = `The Castle in ${S.en}`;
   if (fallingLeaves) fallingLeaves.material.map = key === 'spring' ? petalTex : leafTexOne;
+  if (interior) interior.setDecor(key);
   document.querySelectorAll('#seasons button').forEach((b) => b.classList.toggle('on', b.dataset.season === key));
 }
 function stepSeason(dt) {
@@ -1790,12 +1804,421 @@ function applyTime(t, force = false) {
 }
 
 /* =====================================================================
+   interior: the Great Hall (separate scene, entered through the portal)
+   ===================================================================== */
+function makeWoodTexture() {
+  const S = 512, r = mulberry32(91), c = makeCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#3a2616'; g.fillRect(0, 0, S, S);
+  for (let x = 0; x < S; x += 64) {
+    g.fillStyle = `hsl(${24 + r() * 8},${34 + r() * 12}%,${20 + r() * 9}%)`;
+    g.fillRect(x + 1, 0, 62, S);
+    for (let k = 0; k < 14; k++) {
+      g.strokeStyle = `rgba(20,10,4,${0.15 + r() * 0.25})`; g.lineWidth = 1 + r() * 1.5;
+      g.beginPath(); const gx = x + 4 + r() * 56; g.moveTo(gx, 0);
+      for (let y = 0; y <= S; y += 32) g.lineTo(gx + Math.sin(y * 0.02 + k) * 2.5, y);
+      g.stroke();
+    }
+  }
+  addNoise(g, S, 14, r);
+  return toTex(c);
+}
+function makeStainedTexture(seed, rose = false) {
+  const W = rose ? 512 : 256, H = rose ? 512 : 768, r = mulberry32(seed);
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  const jewels = ['#1d3f9a', '#2757c9', '#9c1c2a', '#c93a2a', '#d99a1c', '#f0c040', '#1f7a45', '#5a2a86', '#2a9aa8'];
+  g.fillStyle = '#111'; g.fillRect(0, 0, W, H);
+  if (rose) {
+    const cx = W / 2, cy = H / 2;
+    for (let ring = 0; ring < 5; ring++) {
+      const r0 = ring * 52, r1 = r0 + 52, n = 8 + ring * 8;
+      for (let i = 0; i < n; i++) {
+        const a0 = (i / n) * TAU, a1 = ((i + 1) / n) * TAU;
+        g.fillStyle = jewels[(i + ring * 3) % jewels.length];
+        g.beginPath(); g.arc(cx, cy, r1, a0, a1); g.arc(cx, cy, r0, a1, a0, true); g.closePath(); g.fill();
+      }
+    }
+    g.strokeStyle = '#0c0a08'; g.lineWidth = 5;
+    for (let ring = 1; ring <= 5; ring++) { g.beginPath(); g.arc(cx, cy, ring * 52, 0, TAU); g.stroke(); }
+    for (let i = 0; i < 16; i++) { const a = (i / 16) * TAU; g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(a) * 260, cy + Math.sin(a) * 260); g.stroke(); }
+  } else {
+    // jittered grid of glass pieces + a central medallion
+    const cols = 4, rows = 12, cw = W / cols, ch = H / rows;
+    const pts = [];
+    for (let j = 0; j <= rows; j++) for (let i = 0; i <= cols; i++) {
+      const edge = i === 0 || j === 0 || i === cols || j === rows;
+      pts.push([i * cw + (edge ? 0 : (r() - 0.5) * cw * 0.5), j * ch + (edge ? 0 : (r() - 0.5) * ch * 0.5)]);
+    }
+    const P = (i, j) => pts[j * (cols + 1) + i];
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+      g.fillStyle = jewels[Math.floor(r() * jewels.length)];
+      g.beginPath(); g.moveTo(...P(i, j)); g.lineTo(...P(i + 1, j)); g.lineTo(...P(i + 1, j + 1)); g.lineTo(...P(i, j + 1)); g.closePath(); g.fill();
+      g.strokeStyle = '#0c0a08'; g.lineWidth = 4; g.stroke();
+    }
+    g.fillStyle = '#e8c35a'; g.beginPath(); g.arc(W / 2, H * 0.42, W * 0.3, 0, TAU); g.fill();
+    g.fillStyle = seed % 2 ? '#9c1c2a' : '#1d3f9a'; g.beginPath(); g.arc(W / 2, H * 0.42, W * 0.22, 0, TAU); g.fill();
+    g.fillStyle = '#f3e3b0';
+    g.beginPath(); g.moveTo(W / 2, H * 0.42 - W * 0.16); g.lineTo(W / 2 + W * 0.1, H * 0.42); g.lineTo(W / 2, H * 0.42 + W * 0.16); g.lineTo(W / 2 - W * 0.1, H * 0.42); g.closePath(); g.fill();
+    g.strokeStyle = '#0c0a08'; g.lineWidth = 5;
+    g.beginPath(); g.arc(W / 2, H * 0.42, W * 0.3, 0, TAU); g.stroke();
+    g.beginPath(); g.arc(W / 2, H * 0.42, W * 0.22, 0, TAU); g.stroke();
+  }
+  for (let i = 0; i < 400; i++) { g.fillStyle = `rgba(255,255,255,${r() * 0.08})`; g.fillRect(r() * W, r() * H, 3 + r() * 10, 3 + r() * 10); }
+  const t = toTex(c);
+  if (!rose) { t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.ClampToEdgeWrapping; t.offset.set(0.5, 0); }
+  return t;
+}
+function makeBannerTexture(bg, fg, emblem) {
+  const c = makeCanvas(128, 384), g = c.getContext('2d');
+  g.fillStyle = bg; g.fillRect(0, 0, 128, 384);
+  g.fillStyle = fg; g.fillRect(0, 0, 128, 14); g.fillRect(8, 20, 4, 330); g.fillRect(116, 20, 4, 330);
+  // swallow-tail bottom
+  g.clearRect(0, 330, 128, 54); g.fillStyle = bg;
+  g.beginPath(); g.moveTo(0, 330); g.lineTo(128, 330); g.lineTo(128, 384); g.lineTo(64, 350); g.lineTo(0, 384); g.closePath(); g.fill();
+  g.fillStyle = fg; g.save(); g.translate(64, 170);
+  g.beginPath();
+  if (emblem === 'leaf') { g.moveTo(0, -46); g.quadraticCurveTo(40, -10, 0, 46); g.quadraticCurveTo(-40, -10, 0, -46); }
+  else if (emblem === 'tower') { g.rect(-18, -20, 36, 60); g.rect(-24, -34, 12, 16); g.rect(-6, -34, 12, 16); g.rect(12, -34, 12, 16); }
+  else if (emblem === 'star') { for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + (k / 10) * TAU, rr = k % 2 ? 18 : 44; g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } }
+  else { g.arc(0, 0, 40, 0.6, TAU - 0.6); g.arc(16, 0, 30, TAU - 0.9, 0.9, true); }
+  g.closePath(); g.fill(); g.restore();
+  return toTex(c, true, false);
+}
+
+function buildInterior() {
+  const S = new THREE.Scene();
+  S.fog = new THREE.FogExp2(0x2a1c10, 0.006);
+  const HW = 9, L = 42, WH = 16, RIDGE = 25, TH = 0.85;
+  const woodTex = makeWoodTexture();
+  const inStone = new THREE.MeshStandardMaterial({ map: TX.stone, bumpMap: TX.bump, bumpScale: 0.6, roughness: 0.9, color: 0xdac9a6 });
+  const inTrim = new THREE.MeshStandardMaterial({ map: TX.stone, bumpMap: TX.bump, bumpScale: 0.5, roughness: 0.85, color: 0xb3a183 });
+  const floorMat = new THREE.MeshStandardMaterial({ map: TX.pave, roughness: 0.5, color: 0xc2b59e });
+  const woodDark = new THREE.MeshStandardMaterial({ map: woodTex, color: 0x9a7658, roughness: 0.75 });
+  const woodTable = new THREE.MeshStandardMaterial({ map: woodTex, color: 0xd8aa7a, roughness: 0.55 });
+  const gold = new THREE.MeshStandardMaterial({ color: 0xe0b35a, metalness: 0.9, roughness: 0.28 });
+  const iron = new THREE.MeshStandardMaterial({ color: 0x1c1a18, metalness: 0.6, roughness: 0.5 });
+  const soot = new THREE.MeshStandardMaterial({ color: 0x0d0a08, roughness: 1 });
+  const glassTex = makeStainedTexture(3), glassTex2 = makeStainedTexture(4), roseTex = makeStainedTexture(5, true);
+  const glassMats = [glassTex, glassTex2, roseTex].map((t) => new THREE.MeshStandardMaterial({ map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: 1, roughness: 0.3 }));
+  const b = new Batcher(), gb = new Batcher();
+
+  // floor, dais
+  b.add(new THREE.BoxGeometry(2 * HW + 2 * TH, 0.2, L + 2 * TH), floorMat, M(0, -0.1, -L / 2), 'world', 1 / 6);
+  b.add(new THREE.BoxGeometry(2 * HW, 0.6, 7), floorMat, M(0, 0.3, -L + 3.5), 'world', 1 / 6);
+  b.add(new THREE.BoxGeometry(2 * HW, 0.3, 0.8), inTrim, M(0, 0.15, -L + 7.4), 'world', 1 / 6);
+
+  // long walls with lancet windows
+  const winU = []; for (let i = 0; i < 8; i++) winU.push(4.2 + i * 4.8);
+  const winW = 2.4, winH = 8.6, winY = 3.4;
+  const glassSpots = [];
+  for (const side of [-1, 1]) {
+    const sh = new THREE.Shape(); sh.moveTo(0, 0); sh.lineTo(L, 0); sh.lineTo(L, WH); sh.lineTo(0, WH); sh.lineTo(0, 0);
+    for (const u of winU) sh.holes.push(archShape(winW, winH, u, winY));
+    b.add(new THREE.ExtrudeGeometry(sh, { depth: TH, bevelEnabled: false, curveSegments: 10 }), inStone, M(side < 0 ? -HW - TH : HW, 0, 0, Math.PI / 2), 'world', 1 / 6);
+    winU.forEach((u, i) => {
+      const ry = side < 0 ? Math.PI / 2 : -Math.PI / 2, gx = side * (HW + TH - 0.12);
+      gb.add(new THREE.ShapeGeometry(archShape(winW, winH), 10), glassMats[i % 2], M(gx, winY, -u, ry), 'scale', [1 / winW, 1 / winH]);
+      glassSpots.push({ x: gx, y: winY, z: -u, ry });
+      b.add(new THREE.BoxGeometry(0.7, 0.3, winW + 0.5), inTrim, M(side * (HW - 0.2), winY - 0.3, -u));
+    });
+    // engaged columns + hammerbeam trusses
+    for (let i = 0; i <= 8; i++) {
+      const u = 1.8 + i * 4.8, z = -u, xw = side * HW;
+      b.add(new THREE.CylinderGeometry(0.42, 0.5, 14.6, 16), inTrim, M(side * (HW - 0.2), 7.3, z), 'scale', [0.5, 2.4]);
+      b.add(new THREE.BoxGeometry(1.2, 0.6, 1.2), inTrim, M(side * (HW - 0.3), 14.9, z));
+      b.add(new THREE.BoxGeometry(2.8, 0.45, 0.45), woodDark, M(side * (HW - 1.4), 15.4, z));
+      b.add(new THREE.BoxGeometry(3.6, 0.32, 0.32), woodDark, M(xw - side * 1.3, 13.9, z, 0, 1, 1, 1, 0, side < 0 ? Math.PI / 4 : -Math.PI / 4));
+      b.add(new THREE.BoxGeometry(0.34, 3.8, 0.34), woodDark, M(side * (HW - 2.6), 17.2, z));
+      b.add(new THREE.BoxGeometry(3.2, 0.3, 0.3), woodDark, M(side * (HW - 4.1), 20.0, z, 0, 1, 1, 1, 0, side < 0 ? 0.7 : -0.7));
+      if (side > 0) b.add(new THREE.BoxGeometry(8, 0.4, 0.4), woodDark, M(0, 21.5, z));
+    }
+    // purlins
+    for (const ax of [8.2, 5.6, 3.0]) b.add(new THREE.BoxGeometry(0.3, 0.3, L), woodDark, M(side * ax, 16 + (9 * (10.2 - ax)) / 10.2 - 0.35, -L / 2));
+  }
+  // roof slabs (casting shadows so sunlight only enters through windows)
+  const th = Math.atan2(9, 10.2), slabW = Math.hypot(10.2, 9);
+  for (const side of [-1, 1]) {
+    const cx = side * 5.1 + side * Math.sin(th) * 0.22, cy = 20.5 + Math.cos(th) * 0.22;
+    b.add(new THREE.BoxGeometry(slabW + 0.6, 0.44, L + 2.6), woodDark, M(cx, cy, -L / 2, 0, 1, 1, 1, 0, -side * th), 'world', 1 / 3);
+  }
+  b.add(new THREE.BoxGeometry(0.5, 0.5, L), woodDark, M(0, 24.6, -L / 2));
+  // gable end walls
+  const gable = () => {
+    const s = new THREE.Shape();
+    s.moveTo(-HW - TH, 0); s.lineTo(HW + TH, 0); s.lineTo(HW + TH, WH); s.lineTo(0, RIDGE + 0.5); s.lineTo(-HW - TH, WH); s.lineTo(-HW - TH, 0);
+    return s;
+  };
+  {
+    const s = gable(); s.holes.push(archShape(3.2, 6.6, 0, 9.4));
+    b.add(new THREE.ExtrudeGeometry(s, { depth: TH, bevelEnabled: false, curveSegments: 10 }), inStone, M(0, 0, 0), 'world', 1 / 6);
+    gb.add(new THREE.ShapeGeometry(archShape(3.2, 6.6), 10), glassMats[0], M(0, 9.4, TH - 0.12, Math.PI), 'scale', [1 / 3.2, 1 / 6.6]);
+    glassSpots.push({ x: 0, y: 9.4, z: TH - 0.12, ry: Math.PI, w: 3.2, h: 6.6 });
+    // entrance doors (closed; walking into them leads outside)
+    for (let k = 0; k < 4; k++) {
+      const w = 3.8 + k * 0.7, h = 6.6 + k * 0.55;
+      const sh = archShape(w + 0.7, h + 0.5); sh.holes.push(archShape(w, h));
+      b.add(new THREE.ExtrudeGeometry(sh, { depth: 0.3 + k * 0.2, bevelEnabled: false, curveSegments: 10 }), inTrim, M(0, 0, 0, Math.PI), 'world', 1 / 6);
+    }
+    b.add(new THREE.ShapeGeometry(archShape(3.8, 6.6), 10), woodDark, M(0, 0, -0.02, Math.PI), 'scale', [0.3, 0.3]);
+    b.add(new THREE.BoxGeometry(0.08, 6.0, 0.08), iron, M(0, 3, -0.08));
+    for (const hy of [1.4, 4.2]) b.add(new THREE.BoxGeometry(3.4, 0.14, 0.06), iron, M(0, hy, -0.07));
+  }
+  {
+    const s = gable();
+    const rose = new THREE.Path(); rose.absarc(0, 13.3, 3.3, 0, TAU, true); s.holes.push(rose);
+    for (const lx of [-5.8, 5.8]) s.holes.push(archShape(1.8, 6.4, lx, 5.2));
+    b.add(new THREE.ExtrudeGeometry(s, { depth: TH, bevelEnabled: false, curveSegments: 24 }), inStone, M(0, 0, -L - TH), 'world', 1 / 6);
+    gb.add(new THREE.CircleGeometry(3.3, 48), glassMats[2], M(0, 13.3, -L - TH + 0.12), 'scale', [1, 1]);
+    const ringS = new THREE.Shape(); ringS.absarc(0, 0, 3.8, 0, TAU, false);
+    const ringH = new THREE.Path(); ringH.absarc(0, 0, 3.3, 0, TAU, true); ringS.holes.push(ringH);
+    b.add(new THREE.ExtrudeGeometry(ringS, { depth: 0.4, bevelEnabled: false, curveSegments: 40 }), inTrim, M(0, 13.3, -L), 'world', 1 / 6);
+    for (const lx of [-5.8, 5.8]) {
+      gb.add(new THREE.ShapeGeometry(archShape(1.8, 6.4), 10), glassMats[1], M(lx, 5.2, -L - TH + 0.12), 'scale', [1 / 1.8, 1 / 6.4]);
+      glassSpots.push({ x: lx, y: 5.2, z: -L - TH + 0.12, ry: 0, w: 1.8, h: 6.4 });
+    }
+    // fireplace
+    for (const px of [-2.5, 2.5]) b.add(new THREE.BoxGeometry(1.0, 3.4, 1.4), inTrim, M(px, 0.6 + 1.7, -L + 0.7));
+    b.add(new THREE.BoxGeometry(6.2, 1.0, 1.6), inTrim, M(0, 0.6 + 3.9, -L + 0.8));
+    b.add(new THREE.BoxGeometry(5.2, 4.2, 1.0), inStone, M(0, 0.6 + 6.5, -L + 0.5), 'world', 1 / 6);
+    b.add(new THREE.BoxGeometry(4.0, 3.4, 0.2), soot, M(0, 0.6 + 1.7, -L + 0.1));
+    b.add(new THREE.BoxGeometry(4.0, 0.1, 1.2), soot, M(0, 0.62, -L + 0.7));
+    for (let k = 0; k < 3; k++) b.add(new THREE.CylinderGeometry(0.16, 0.16, 1.8, 8), woodDark, M(-0.1 + k * 0.1, 0.8 + (k === 2 ? 0.25 : 0), -L + 0.8 - k * 0.25 + (k === 2 ? 0.25 : 0), 0.3 * k, 1, 1, 1, 0, Math.PI / 2));
+  }
+
+  // high table & chairs on the dais
+  const dz = -L + 4;
+  b.add(new THREE.BoxGeometry(13, 0.12, 1.4), woodTable, M(0, 0.6 + 0.8, dz), 'world', 1 / 3);
+  b.add(new THREE.BoxGeometry(12.6, 0.72, 0.1), woodDark, M(0, 0.6 + 0.38, dz + 0.6), 'world', 1 / 3);
+  for (let i = 0; i < 7; i++) {
+    const cx = -5.4 + i * 1.8, big = i === 3;
+    b.add(new THREE.BoxGeometry(0.7, 0.1, 0.7), woodDark, M(cx, 0.6 + 0.5, dz - 1.1));
+    b.add(new THREE.BoxGeometry(0.7, big ? 2.4 : 1.5, 0.1), big ? gold : woodDark, M(cx, 0.6 + (big ? 1.7 : 1.25), dz - 1.45));
+  }
+  // long tables & benches
+  const tables = [-5.6, -2.0, 2.0, 5.6], tz0 = -6, tz1 = -32, tLen = tz0 - tz1, tzc = (tz0 + tz1) / 2;
+  for (const tx of tables) {
+    b.add(new THREE.BoxGeometry(1.05, 0.09, tLen), woodTable, M(tx, 0.78, tzc), 'world', 1 / 3);
+    for (const bs of [-0.8, 0.8]) {
+      b.add(new THREE.BoxGeometry(0.38, 0.07, tLen), woodDark, M(tx + bs, 0.45, tzc), 'world', 1 / 3);
+    }
+    for (let z = tz1 + 0.6; z <= tz0 - 0.6; z += 3.2) {
+      b.add(new THREE.BoxGeometry(0.85, 0.72, 0.12), woodDark, M(tx, 0.37, z));
+      for (const bs of [-0.8, 0.8]) b.add(new THREE.BoxGeometry(0.3, 0.42, 0.1), woodDark, M(tx + bs, 0.21, z));
+    }
+  }
+  // banners on the entrance wall
+  [['#7d1b1b', '#d8aa4c', 'leaf'], ['#1f4d2e', '#c9ccd2', 'tower'], ['#1d2f66', '#c89a5a', 'star'], ['#b98a24', '#1a1612', 'moon']].forEach(([bg, fg, em], i) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 5.4), new THREE.MeshStandardMaterial({ map: makeBannerTexture(bg, fg, em), side: THREE.DoubleSide, transparent: true, alphaTest: 0.5, roughness: 0.9 }));
+    m.position.set([-7.1, -4.2, 4.2, 7.1][i], 10.2, -0.1); m.rotation.y = Math.PI;
+    S.add(m);
+  });
+
+  b.build(S, true);
+  gb.build(S, false);
+
+  // place settings (instanced)
+  const plates = [], cups = [];
+  for (const tx of tables) for (const sd of [-0.3, 0.3]) for (let z = tz1 + 0.8; z <= tz0 - 0.8; z += 0.9) { plates.push([tx + sd, 0.835, z]); cups.push([tx + sd * 0.55, 0.83, z + 0.25]); }
+  for (let i = 0; i < 7; i++) { plates.push([-5.4 + i * 1.8, 1.47, dz - 0.3]); cups.push([-5.1 + i * 1.8, 1.465, dz - 0.1]); }
+  const inst = (geo, mat, list) => {
+    const im = new THREE.InstancedMesh(geo, mat, list.length), d = new THREE.Object3D();
+    list.forEach((p, i) => { d.position.set(...p); d.updateMatrix(); im.setMatrixAt(i, d.matrix); });
+    im.castShadow = true; im.receiveShadow = true; S.add(im); return im;
+  };
+  inst(new THREE.CylinderGeometry(0.15, 0.12, 0.02, 18), gold, plates);
+  inst(new THREE.LatheGeometry([[0.03, 0], [0.05, 0.01], [0.012, 0.03], [0.012, 0.1], [0.05, 0.13], [0.055, 0.22]].map(([x, y]) => new THREE.Vector2(x, y)), 12), gold, cups);
+
+  // seasonal table decorations
+  const decoGeo = new THREE.SphereGeometry(1, 20, 14);
+  { const p = decoGeo.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i), k = 1 + 0.07 * Math.cos(8 * Math.atan2(z, x)) * Math.sqrt(x * x + z * z); p.setX(i, x * k); p.setZ(i, z * k); } decoGeo.computeVertexNormals(); }
+  const deco = new THREE.InstancedMesh(decoGeo, new THREE.MeshStandardMaterial({ roughness: 0.55 }), 260);
+  deco.castShadow = true; S.add(deco);
+  const xmas = new THREE.Group(); S.add(xmas);
+  {
+    const tree = buildConiferCards(33, 6.5, 2.1);
+    const mat = new THREE.MeshStandardMaterial({ map: TX.leaf, alphaTest: 0.45, side: THREE.DoubleSide, vertexColors: true, roughness: 0.8, color: 0x3f6a34 });
+    const orn = [];
+    const ro = mulberry32(8);
+    for (const tx of [-7.2, 7.2]) {
+      const m = new THREE.Mesh(tree.leaves, mat); m.position.set(tx, 0.6, -L + 7.2); m.castShadow = true; xmas.add(m);
+      for (let k = 0; k < 70; k++) {
+        const h = ro() * 5.4 + 0.8, rr = 2.1 * (1 - h / 6.6) + 0.1, a = ro() * TAU;
+        orn.push(tx + Math.cos(a) * rr, 0.6 + h, -L + 7.2 + Math.sin(a) * rr);
+      }
+    }
+    const og = new THREE.BufferGeometry(); og.setAttribute('position', new THREE.Float32BufferAttribute(orn, 3));
+    const oc = []; for (let i = 0; i < orn.length / 3; i++) { const c = [srgb(0xffd27a), srgb(0xff5a4a), srgb(0xfff2d0)][i % 3]; oc.push(c.r, c.g, c.b); }
+    og.setAttribute('color', new THREE.Float32BufferAttribute(oc, 3));
+    xmas.add(new THREE.Points(og, new THREE.PointsMaterial({ size: 0.16, vertexColors: true, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, map: TX.flame })));
+  }
+  const setDecor = (key) => {
+    const d = new THREE.Object3D(), r = mulberry32(12 + key.length);
+    const put = [];
+    for (const tx of tables) for (let z = tz1 + 1.6; z <= tz0 - 1.0; z += 3.2) {
+      if (key === 'autumn') {
+        put.push([tx, 0.95, z, 0.17, 0.13, 0.17, 0xd8741e]);
+        put.push([tx + 0.18, 0.88, z + 0.3, 0.07, 0.065, 0.07, 0xa8231a], [tx - 0.15, 0.88, z - 0.32, 0.07, 0.065, 0.07, 0xb8b02a]);
+      } else if (key === 'winter') {
+        put.push([tx, 0.89, z, 0.28, 0.07, 0.12, 0x2f5a2a]);
+        for (let k = 0; k < 4; k++) put.push([tx + (r() - 0.5) * 0.2, 0.93, z + (r() - 0.5) * 0.3, 0.04, 0.04, 0.04, 0xc01818]);
+      } else if (key === 'spring') {
+        for (let k = 0; k < 6; k++) put.push([tx + (r() - 0.5) * 0.25, 0.95 + r() * 0.12, z + (r() - 0.5) * 0.3, 0.08, 0.08, 0.08, [0xf6c3d0, 0xfbe4ea, 0xe88aa6, 0xfff6d8][k % 4]]);
+      } else {
+        for (let k = 0; k < 5; k++) put.push([tx + (r() - 0.5) * 0.22, 0.89 + (k > 3 ? 0.08 : 0), z + (r() - 0.5) * 0.25, 0.075, 0.07, 0.075, [0x9ac23a, 0xe8d23a, 0x6fa82a][k % 3]]);
+      }
+    }
+    deco.count = Math.min(put.length, 260);
+    put.slice(0, 260).forEach(([x, y, z, sx, sy, sz, c], i) => {
+      d.position.set(x, y, z); d.scale.set(sx, sy, sz); d.rotation.set(0, r() * TAU, 0); d.updateMatrix();
+      deco.setMatrixAt(i, d.matrix); deco.setColorAt(i, srgb(c));
+    });
+    deco.instanceMatrix.needsUpdate = true; if (deco.instanceColor) deco.instanceColor.needsUpdate = true;
+    xmas.visible = key === 'winter';
+  };
+
+  // floating candles
+  const CN = 150, cr = mulberry32(77), candles = [];
+  for (let i = 0; i < CN; i++) candles.push({ x: (cr() - 0.5) * 15, y: 7 + cr() * 3.2, z: -3.5 - cr() * 33, ph: cr() * TAU, h: 0.28 + cr() * 0.2 });
+  const candleMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.045, 0.05, 1, 8).translate(0, -0.5, 0), new THREE.MeshStandardMaterial({ color: 0xf3e9d6, emissive: 0xffd9a0, emissiveIntensity: 0.25, roughness: 0.6 }), CN);
+  S.add(candleMesh);
+  const flamePos = new Float32Array(CN * 3), flameSeed = new Float32Array(CN);
+  candles.forEach((c, i) => { flameSeed[i] = c.ph; });
+  const fg = new THREE.BufferGeometry(); fg.setAttribute('position', new THREE.BufferAttribute(flamePos, 3)); fg.setAttribute('aSeed', new THREE.BufferAttribute(flameSeed, 1));
+  const flamePts = new THREE.Points(fg, new THREE.ShaderMaterial({
+    uniforms: { uTime: U.uTime, uMap: { value: TX.flame }, uSize: { value: 70 * DPR } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `attribute float aSeed; uniform float uTime, uSize; varying float vF;
+      void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;
+        vF = 0.8 + 0.2 * sin(uTime * 13.0 + aSeed * 9.0) + 0.1 * sin(uTime * 23.0 + aSeed);
+        gl_PointSize = uSize * vF / max(-mv.z, 0.3); }`,
+    fragmentShader: `uniform sampler2D uMap; varying float vF;
+      void main(){ vec2 uv = gl_PointCoord; uv.y = 1.0 - uv.y; uv = (uv - 0.5) * vec2(1.6, 1.0) + 0.5; vec4 t = texture2D(uMap, uv); gl_FragColor = vec4(vec3(1.0, 0.72, 0.38) * 3.0 * vF, t.a); }`,
+  }));
+  flamePts.frustumCulled = false; S.add(flamePts);
+
+  // fireplace fire
+  const fire = new THREE.Group(); fire.position.set(0, 0.95, -L + 0.8); S.add(fire);
+  for (let k = 0; k < 6; k++) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: TX.flame, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false, color: new THREE.Color(4, 2.6, 1.4) }));
+    sp.userData.base = [1.1 - (k % 3) * 0.25, 1.9 - (k % 3) * 0.4, k * 1.3, (k - 2.5) * 0.35];
+    fire.add(sp);
+  }
+
+  // light shafts through the windows (stretched along the sun direction in the shader)
+  const shaftMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: U.uTime, uLight: { value: new THREE.Vector3(0, -1, 0) }, uStr: { value: 0 }, uColor: { value: new THREE.Color(1, 0.85, 0.6) }, uLen: { value: 34 } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
+    vertexShader: `uniform vec3 uLight; uniform float uLen; varying float vZ, vFace; varying vec2 vXY; varying vec3 vW;
+      void main(){
+        vec4 base = modelMatrix * vec4(position.xy, 0.0, 1.0);
+        vec3 inward = normalize((modelMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz);
+        vFace = max(dot(inward, uLight), 0.0);
+        vec3 w = base.xyz + uLight * position.z * uLen;
+        vZ = position.z; vXY = vec2(position.x / 1.1, (position.y - 4.0) / 3.9); vW = w;
+        gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+      }`,
+    fragmentShader: `uniform float uStr, uTime; uniform vec3 uColor; varying float vZ, vFace; varying vec2 vXY; varying vec3 vW;
+      void main(){
+        float e = 1.0 - smoothstep(0.55, 1.0, min(abs(vXY.x), abs(vXY.y)));
+        float n = 0.7 + 0.3 * sin(vW.x * 0.8 + vW.z * 0.6 + uTime * 0.25) * sin(vW.y * 1.1 - uTime * 0.17);
+        float a = uStr * smoothstep(0.05, 0.3, vFace) * pow(1.0 - vZ, 1.4) * e * n * smoothstep(0.0, 0.03, vZ);
+        gl_FragColor = vec4(uColor, a);
+      }`,
+  });
+  const shaftGeo = new THREE.BoxGeometry(2.2, 7.8, 1, 1, 1, 1).translate(0, 4.0, 0.5);
+  for (const g of glassSpots) {
+    const m = new THREE.Mesh(shaftGeo, shaftMat);
+    m.position.set(g.x, g.y, g.z); m.rotation.y = g.ry;
+    if (g.w) m.scale.set(g.w / 2.4, g.h / 8.6, 1);
+    m.frustumCulled = false; m.renderOrder = 3; S.add(m);
+  }
+
+  // dust motes
+  const DN = 1400, dp = new Float32Array(DN * 3), dr = mulberry32(5);
+  for (let i = 0; i < DN; i++) { dp[i * 3] = (dr() - 0.5) * 17; dp[i * 3 + 1] = dr() * 14; dp[i * 3 + 2] = -dr() * L; }
+  const dg = new THREE.BufferGeometry(); dg.setAttribute('position', new THREE.BufferAttribute(dp, 3));
+  const dustMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: U.uTime, uAmt: { value: 0.5 }, uSize: { value: 6 * DPR } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `uniform float uTime, uSize; varying float vA;
+      void main(){ vec3 p = position; p.x += sin(uTime * 0.13 + p.z) * 0.6; p.y += sin(uTime * 0.09 + p.x * 2.0) * 0.8; p.z += cos(uTime * 0.11 + p.y) * 0.6;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv;
+        vA = 0.5 + 0.5 * sin(uTime * 0.7 + position.x * 13.0); gl_PointSize = uSize / max(-mv.z, 0.5); }`,
+    fragmentShader: `uniform float uAmt; varying float vA; void main(){ float a = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * vA * uAmt; gl_FragColor = vec4(1.0, 0.9, 0.7, a); }`,
+  });
+  S.add(new THREE.Points(dg, dustMat));
+
+  // lights
+  const hemiIn = new THREE.HemisphereLight(0xffe6c8, 0x3a2a1a, 0.3); S.add(hemiIn);
+  const sunIn = new THREE.DirectionalLight(0xfff0d8, 3);
+  sunIn.castShadow = true; sunIn.shadow.mapSize.set(2048, 2048);
+  Object.assign(sunIn.shadow.camera, { left: -32, right: 32, top: 32, bottom: -32, near: 1, far: 220 });
+  sunIn.shadow.bias = -0.0005; sunIn.shadow.normalBias = 0.04;
+  sunIn.target.position.set(0, 0, -L / 2); S.add(sunIn, sunIn.target);
+  const moonIn = new THREE.DirectionalLight(0x9fb6ff, 0); moonIn.position.set(-40, 50, -10); moonIn.target.position.set(0, 0, -L / 2); S.add(moonIn, moonIn.target);
+  const warm = [-9, -20, -31].map((z) => { const l = new THREE.PointLight(0xffb466, 20, 0, 1.6); l.position.set(0, 8.6, z); S.add(l); return l; });
+  const fireLight = new THREE.PointLight(0xff7a2a, 30, 0, 1.8); fireLight.position.set(0, 2.2, -L + 2.2); S.add(fireLight);
+  const pm = new THREE.PMREMGenerator(renderer);
+  S.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  S.environmentIntensity = 0.18;
+
+  const cd = new THREE.Object3D();
+  const skyTint = new THREE.Color();
+  return {
+    scene: S,
+    setDecor,
+    spawn: { x: 0, z: -2.8, yaw: 0 },
+    ground: (x, z) => (z < -L + 7 ? 0.6 : z < -L + 7.8 ? 0.3 : 0),
+    canStand(x, z) {
+      if (Math.abs(x) > HW - 0.95 || z > -0.6 || z < -L + 1.8) return false;
+      for (const tx of tables) if (Math.abs(x - tx) < 1.3 && z < tz0 + 0.3 && z > tz1 - 0.3) return false;
+      if (Math.abs(x) < 6.9 && z < dz + 1.1 && z > dz - 1.9) return false;
+      if (xmas.visible && Math.hypot(Math.abs(x) - 7.2, z - (-L + 7.2)) < 2.3) return false;
+      return true;
+    },
+    isExit: (x, z) => z > -1.3 && Math.abs(x) < 1.9,
+    update(dt, t) {
+      const sunUp = sunDir.y > 0.02;
+      const ov = W.over;
+      sunIn.color.copy(sunLight.color);
+      sunIn.intensity = sunUp ? sunLight.intensity * 1.2 : 0;
+      sunIn.castShadow = sunIn.intensity > 0.2;
+      sunIn.position.copy(sunIn.target.position).addScaledVector(sunDir, 90);
+      moonIn.intensity = moonLight.intensity * 0.5;
+      hemiIn.intensity = 0.14 + 0.38 * state.dayK * (1 - 0.4 * ov) + W.flash * 1.5;
+      skyTint.copy(skyU.horizonColor.value).lerp(tmpC.setRGB(1, 1, 1), 0.55);
+      const glow = 0.06 + state.dayK * (1.5 - ov * 0.8) + (1 - state.dayK) * (1 - state.nightK) * 0.6 + W.flash * 3;
+      for (const m of glassMats) { m.emissiveIntensity = glow; m.emissive.copy(skyTint); }
+      shaftMat.uniforms.uLight.value.copy(sunDir).negate();
+      shaftMat.uniforms.uStr.value = sunUp ? (sunLight.intensity / 3.4) * 0.09 : 0;
+      shaftMat.uniforms.uColor.value.copy(sunLight.color);
+      dustMat.uniforms.uAmt.value = 0.25 + 0.5 * state.dayK * (1 - ov);
+      const nightBoost = 0.45 + 0.55 * (1 - state.dayK);
+      warm.forEach((l, i) => { l.intensity = 26 * nightBoost * (0.92 + 0.08 * Math.sin(t * 7 + i * 2)); });
+      fireLight.intensity = (26 + 22 * nightBoost) * (0.82 + 0.12 * Math.sin(t * 17) + 0.08 * Math.sin(t * 29 + 1.3));
+      S.fog.color.setRGB(0.05, 0.035, 0.02).lerp(tmpC.setRGB(0.25, 0.2, 0.15), state.dayK * (1 - ov) * 0.6);
+      candles.forEach((c, i) => {
+        const y = c.y + Math.sin(t * 0.6 + c.ph) * 0.18;
+        cd.position.set(c.x, y, c.z); cd.scale.set(1, c.h, 1); cd.updateMatrix(); candleMesh.setMatrixAt(i, cd.matrix);
+        flamePos[i * 3] = c.x; flamePos[i * 3 + 1] = y + 0.07; flamePos[i * 3 + 2] = c.z;
+      });
+      candleMesh.instanceMatrix.needsUpdate = true; fg.attributes.position.needsUpdate = true;
+      fire.children.forEach((sp) => {
+        const [w, h, ph, ox] = sp.userData.base;
+        const fl = 0.8 + 0.2 * Math.sin(t * 15 + ph) + 0.12 * Math.sin(t * 27 + ph * 2);
+        sp.scale.set(w * fl, h * (0.85 + 0.25 * Math.sin(t * 9 + ph)), 1);
+        sp.position.set(ox + Math.sin(t * 6 + ph) * 0.06, h * 0.32, 0);
+      });
+      renderer.toneMappingExposure = 1.2;
+    },
+  };
+}
+
+/* =====================================================================
    post processing
    ===================================================================== */
 const rt = new THREE.WebGLRenderTarget(window.innerWidth * DPR, window.innerHeight * DPR, { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rt);
 composer.setSize(window.innerWidth, window.innerHeight);
-composer.addPass(new RenderPass(scene, camera));
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
 const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.55, 0.92);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
@@ -1828,6 +2251,8 @@ if (camera.aspect < 1) {
   camera.fov = 55; camera.updateProjectionMatrix();
   camera.position.sub(controls.target).multiplyScalar(clamp(1.0 / camera.aspect, 1, 2.1)).add(controls.target);
 }
+const ORBIT_FOV = camera.fov;
+const ORBIT_HOME = { pos: camera.position.clone(), target: controls.target.clone() };
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.minDistance = 22;
@@ -1843,8 +2268,9 @@ controls.addEventListener('start', () => { lastInteract = performance.now(); con
 const ui = {
   time: document.getElementById('time'), wind: document.getElementById('wind'), windLabel: document.getElementById('windLabel'),
   cam: document.getElementById('btnCam'), flow: document.getElementById('btnFlow'), leaves: document.getElementById('btnLeaves'),
-  sound: document.getElementById('btnSound'), shot: document.getElementById('btnShot'),
+  sound: document.getElementById('btnSound'), shot: document.getElementById('btnShot'), walk: document.getElementById('btnWalk'),
 };
+ui.walk.addEventListener('click', () => (walk.on ? exitWalk() : enterWalk()));
 const opts = { autoCam: true, flow: false, leaves: true, sound: false };
 let gust = 0;
 let timeTween = null;
@@ -1878,9 +2304,9 @@ window.addEventListener('keydown', (e) => {
 let downAt = null;
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-canvas.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointerdown', (e) => { downAt = walk.on ? null : [e.clientX, e.clientY]; });
 canvas.addEventListener('pointerup', (e) => {
-  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;
+  if (walk.on || !downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;
   gust = 1;
   raycaster.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
   const hit = new THREE.Vector3();
@@ -1894,7 +2320,7 @@ canvas.addEventListener('pointerup', (e) => {
    ambient sound (WebAudio synthesis — no files)
    ===================================================================== */
 const audio = (() => {
-  let ctx, master, windGain, windFilter, rustleGain, rainGain, brownBuf, running = false, birdTimer = 0;
+  let ctx, master, windGain, windFilter, rustleGain, rainGain, brownBuf, whiteBuf, running = false, birdTimer = 0;
   function noiseBuffer(brown) {
     const len = ctx.sampleRate * 4, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
     let last = 0;
@@ -1917,7 +2343,7 @@ const audio = (() => {
     const rh = ctx.createBiquadFilter(); rh.type = 'highshelf'; rh.frequency.value = 4000; rh.gain.value = -8;
     rainGain = ctx.createGain(); rainGain.gain.value = 0;
     rn.connect(rf).connect(rh).connect(rainGain).connect(master); rn.start();
-    brownBuf = noiseBuffer(true);
+    brownBuf = noiseBuffer(true); whiteBuf = noiseBuffer(false);
   }
   function chirp(night) {
     const t0 = ctx.currentTime;
@@ -1947,22 +2373,206 @@ const audio = (() => {
       g.gain.setTargetAtTime(0.5, t0 + 0.3, 0.3); g.gain.setTargetAtTime(0, t0 + 1.2, 0.9);
       src.connect(lp).connect(g).connect(master); src.start(t0, Math.random() * 2); src.stop(t0 + 4.5);
     },
-    update(dt, t, wind, g, night, w) {
+    step(kind) {
+      if (!running) return;
+      const t0 = ctx.currentTime;
+      const src = ctx.createBufferSource(); src.buffer = kind === 'stone' ? whiteBuf : brownBuf;
+      const f = ctx.createBiquadFilter(); f.type = kind === 'stone' ? 'bandpass' : 'lowpass';
+      f.frequency.value = kind === 'stone' ? 900 + Math.random() * 300 : kind === 'snow' ? 1400 : 700; f.Q.value = 0.8;
+      const g = ctx.createGain();
+      const peak = kind === 'stone' ? 0.16 : kind === 'snow' ? 0.5 : 0.35, len = kind === 'snow' ? 0.18 : 0.11;
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t0 + len);
+      src.connect(f).connect(g).connect(master); src.start(t0, Math.random() * 3); src.stop(t0 + len + 0.05);
+    },
+    update(dt, t, wind, g, night, w, inside) {
       if (!running) return;
       const now = ctx.currentTime;
-      rainGain.gain.setTargetAtTime(Math.min(1.3, w.rain) * 0.32, now, 0.6);
-      windGain.gain.setTargetAtTime(0.12 + wind * 0.35 + g * 0.5 + Math.sin(t * 0.37) * 0.05 * (0.5 + wind), now, 0.4);
-      windFilter.frequency.setTargetAtTime(260 + wind * 500 + g * 700 + Math.sin(t * 0.23) * 80, now, 0.4);
-      rustleGain.gain.setTargetAtTime(0.008 + wind * 0.035 + g * 0.05, now, 0.3);
+      const muffle = inside ? 0.3 : 1;
+      windFilter.frequency.setTargetAtTime(inside ? 180 : 500, now, 0.5);
+      rainGain.gain.setTargetAtTime(Math.min(1.3, w.rain) * 0.32 * (inside ? 0.45 : 1), now, 0.6);
+      if (inside && Math.random() < dt * 5) {
+        const t0 = now + Math.random() * 0.05, src = ctx.createBufferSource(); src.buffer = whiteBuf;
+        const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1500 + Math.random() * 2500;
+        const cg = ctx.createGain(); cg.gain.setValueAtTime(0.05 + Math.random() * 0.12, t0); cg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.03 + Math.random() * 0.04);
+        src.connect(hp).connect(cg).connect(master); src.start(t0, Math.random() * 3); src.stop(t0 + 0.1);
+      }
+      windGain.gain.setTargetAtTime((0.12 + wind * 0.35 + g * 0.5 + Math.sin(t * 0.37) * 0.05 * (0.5 + wind)) * muffle, now, 0.4);
+      if (!inside) windFilter.frequency.setTargetAtTime(260 + wind * 500 + g * 700 + Math.sin(t * 0.23) * 80, now, 0.4);
+      rustleGain.gain.setTargetAtTime((0.008 + wind * 0.035 + g * 0.05) * (inside ? 0 : 1), now, 0.3);
       birdTimer -= dt;
       if (birdTimer <= 0) {
         birdTimer = night > 0.5 ? 0.9 + Math.random() * 1.5 : 2 + Math.random() * 6;
-        const quiet = w.rain > 0.3 || w.snow > 0.3 || (SS.key === 'winter' && night > 0.5);
+        const quiet = inside || w.rain > 0.3 || w.snow > 0.3 || (SS.key === 'winter' && night > 0.5);
         if (!quiet) chirp(night > 0.5);
       }
     },
   };
 })();
+
+/* =====================================================================
+   first-person walking
+   ===================================================================== */
+const isTouch = window.matchMedia('(pointer: coarse)').matches;
+const walk = { on: false, place: 'outside', x: 0, z: 0, yaw: 0, pitch: 0, keys: {}, locked: false, bob: 0, busy: false, joy: { x: 0, y: 0, id: null }, look: { id: null, x: 0, y: 0 }, step: 0 };
+const hud = {
+  fade: document.getElementById('fade'), walkHud: document.getElementById('walkHud'), prompt: document.getElementById('prompt'),
+  toast: document.getElementById('placeToast'), joy: document.getElementById('joy'), knob: document.querySelector('#joy i'),
+  tip: document.getElementById('walkTip'),
+};
+const DOOR = { x: -6, z: 8.3 };
+function segDist(px, pz, [ax, az, bx, bz]) {
+  const dx = bx - ax, dz = bz - az, t = clamp(((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz || 1), 0, 1);
+  return Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+}
+const OUT_RECTS = [[-28.6, 14.6, -10.6, 4.6], [-13.6, 1.6, 2, 8.0], [-17.8, 1.8, -29.8, -14.2], [-30.6, 10.6, -42.6, -29.4], [-45.8, -40.8, -35, -9], [18.8, 23.2, -34, -8], [-10.2, -1.8, 7.9, 8.6]];
+const OUT_CIRCLES = [[-34, -3, 11.3], [18, -1, 7.6], [23.6, -6.5, 4.3], [-22.5, -32.5, 5.1], [-38.5, -40, 8.1], [16, -38, 7.1], [bayX0(-7.25), 7.3, 1.4], [bayX0(7.25), 7.3, 1.4]];
+function bayX0(o) { return -6 + o; }
+function canStandOut(x, z) {
+  let ok = false;
+  const ex = x - CX, ez = z - CZ;
+  if (Math.hypot(ex, ez) < WALK.outlineR(Math.atan2(ez, ex)) - 1.2) ok = true;
+  if (segDist(x, z, [VS.x, VS.z, VE.x, VE.z]) < 3.0) ok = true;
+  if (Math.hypot(x - OV.x, z - OV.z) < 9.2) ok = true;
+  if (!ok) return false;
+  for (const [x0, x1, z0, z1] of OUT_RECTS) if (x > x0 && x < x1 && z > z0 && z < z1) return false;
+  for (const [cx, cz, r] of OUT_CIRCLES) if (Math.hypot(x - cx, z - cz) < r) return false;
+  for (const [cx, cz, r] of WALK.circles) if (Math.hypot(x - cx, z - cz) < r) return false;
+  for (const [cx, cz, r] of WALK.trunks) if (Math.hypot(x - cx, z - cz) < r) return false;
+  for (const s of WALK.rails) if (segDist(x, z, s) < 0.38) return false;
+  return true;
+}
+function groundOut(x, z) {
+  if (Math.abs(x - DOOR.x) < 4 && z > 7.5 && z < 10.5) return z < 8.5 ? 0.8 : z < 9.5 ? 0.4 : 0.04;
+  return 0.04;
+}
+function fadeTo(fn) {
+  if (walk.busy) return Promise.resolve();
+  walk.busy = true;
+  hud.fade.classList.add('on');
+  return new Promise((res) => setTimeout(() => {
+    fn();
+    setTimeout(() => { hud.fade.classList.remove('on'); walk.busy = false; res(); }, 120);
+  }, 520));
+}
+let toastTimer = 0;
+function showToast(jp, en) {
+  hud.toast.innerHTML = `<b>${jp}</b><span>${en}</span>`;
+  hud.toast.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => hud.toast.classList.remove('on'), 3200);
+}
+function setPlace(place) {
+  walk.place = place;
+  if (place === 'inside') {
+    if (!interior) { interior = buildInterior(); interior.setDecor(SS.key); }
+    renderPass.scene = interior.scene;
+    walk.x = interior.spawn.x; walk.z = interior.spawn.z; walk.yaw = interior.spawn.yaw; walk.pitch = 0.05;
+    showToast('大広間', 'The Great Hall');
+  } else {
+    renderPass.scene = scene;
+  }
+}
+function enterWalk() {
+  return fadeTo(() => {
+    walk.on = true; controls.enabled = false; controls.autoRotate = false;
+    setPlace('outside');
+    walk.x = -6; walk.z = 23; walk.yaw = 0; walk.pitch = 0.1;
+    camera.fov = isTouch && camera.aspect < 1 ? 75 : 65; camera.near = 0.1; camera.updateProjectionMatrix();
+    document.body.classList.add('walking'); ui.walk.classList.add('on');
+    if (document.activeElement) document.activeElement.blur();
+    showToast('古城の前庭', 'The Forecourt');
+  });
+}
+function exitWalk() {
+  if (document.pointerLockElement) document.exitPointerLock();
+  return fadeTo(() => {
+    walk.on = false; setPlace('outside');
+    controls.enabled = true;
+    camera.fov = ORBIT_FOV; camera.near = 0.5; camera.updateProjectionMatrix();
+    camera.position.copy(ORBIT_HOME.pos); controls.target.copy(ORBIT_HOME.target); controls.update();
+    lastInteract = performance.now();
+    document.body.classList.remove('walking'); ui.walk.classList.remove('on');
+  });
+}
+function updateWalk(dt) {
+  const k = walk.keys;
+  let f = (k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0) + walk.joy.y;
+  let r = (k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0) + walk.joy.x;
+  const len = Math.hypot(f, r); if (len > 1) { f /= len; r /= len; }
+  const speed = (k.ShiftLeft || k.ShiftRight ? 6.5 : 3.2) * (walk.busy ? 0 : 1);
+  const sy = Math.sin(walk.yaw), cy = Math.cos(walk.yaw);
+  const mx = (-sy * f + cy * r) * speed * dt, mz = (-cy * f - sy * r) * speed * dt;
+  const inside = walk.place === 'inside';
+  const can = inside ? (x, z) => interior.canStand(x, z) : canStandOut;
+  const ox = walk.x, oz = walk.z;
+  if (can(walk.x + mx, walk.z)) walk.x += mx;
+  if (can(walk.x, walk.z + mz)) walk.z += mz;
+  const moved = Math.hypot(walk.x - ox, walk.z - oz);
+  // doors
+  if (!walk.busy) {
+    if (!inside && Math.abs((walk.x + mx * 4) - DOOR.x) < 2.1 && walk.z + mz * 4 < DOOR.z + 0.3 && f > 0.2) fadeTo(() => setPlace('inside'));
+    else if (inside && interior.isExit(walk.x, walk.z + mz * 4) && f > 0.2) fadeTo(() => { setPlace('outside'); walk.x = DOOR.x; walk.z = 12; walk.yaw = Math.PI; walk.pitch = 0.05; showToast('古城の前庭', 'The Forecourt'); });
+  }
+  // prompts
+  let msg = '';
+  if (!inside && Math.hypot(walk.x - DOOR.x, walk.z - 10) < 6) msg = '扉へ進むと城の中へ';
+  if (inside && walk.z > -5 && Math.abs(walk.x) < 3) msg = '扉へ進むと外へ';
+  if (hud.prompt.textContent !== msg) { hud.prompt.textContent = msg; hud.prompt.classList.toggle('on', !!msg); }
+  // camera
+  walk.bob += moved * 2.2;
+  const g = inside ? interior.ground(walk.x, walk.z) : groundOut(walk.x, walk.z);
+  walk.gy = walk.gy === undefined ? g : lerp(walk.gy, g, Math.min(1, dt * 12));
+  camera.position.set(walk.x, walk.gy + 1.65 + Math.sin(walk.bob * 2) * 0.035, walk.z);
+  camera.rotation.set(walk.pitch, walk.yaw, 0, 'YXZ');
+  // footsteps
+  walk.step += moved;
+  if (walk.step > (speed > 4 ? 0.95 : 0.72)) {
+    walk.step = 0;
+    const onStone = inside || Math.abs(walk.x - DOOR.x) < 16 && walk.z > 7 && walk.z < 26 || segDist(walk.x, walk.z, [VS.x, VS.z, VE.x, VE.z]) < 3.2 || Math.hypot(walk.x - OV.x, walk.z - OV.z) < 10;
+    audio.step(ENV.uSnow.value > 0.4 && !inside ? 'snow' : onStone ? 'stone' : 'grass');
+  }
+}
+// input
+window.addEventListener('keydown', (e) => {
+  if (!walk.on) return;
+  walk.keys[e.code] = true;
+  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+});
+window.addEventListener('keyup', (e) => { walk.keys[e.code] = false; });
+window.addEventListener('blur', () => { walk.keys = {}; });
+document.addEventListener('pointerlockchange', () => {
+  walk.locked = document.pointerLockElement === canvas;
+  hud.tip.classList.toggle('dim', walk.locked);
+});
+const lookBy = (dx, dy, k) => { walk.yaw -= dx * k; walk.pitch = clamp(walk.pitch - dy * k, -1.35, 1.35); };
+document.addEventListener('mousemove', (e) => { if (walk.on && walk.locked) lookBy(e.movementX, e.movementY, 0.0022); });
+canvas.addEventListener('pointerdown', (e) => {
+  if (!walk.on) return;
+  if (!isTouch && e.pointerType === 'mouse' && !walk.locked && canvas.requestPointerLock) {
+    try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (_) { /* fall back to drag-look */ }
+  }
+  if (walk.look.id === null) { walk.look = { id: e.pointerId, x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); }
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!walk.on || walk.locked || e.pointerId !== walk.look.id) return;
+  lookBy(e.clientX - walk.look.x, e.clientY - walk.look.y, isTouch ? 0.005 : 0.004);
+  walk.look.x = e.clientX; walk.look.y = e.clientY;
+});
+const endLook = (e) => { if (e.pointerId === walk.look.id) walk.look.id = null; };
+canvas.addEventListener('pointerup', endLook); canvas.addEventListener('pointercancel', endLook);
+// virtual joystick (touch)
+const joyMove = (e) => {
+  const r = hud.joy.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  let dx = e.clientX - cx, dy = e.clientY - cy; const m = Math.hypot(dx, dy), max = r.width / 2 - 10;
+  if (m > max) { dx *= max / m; dy *= max / m; }
+  hud.knob.style.transform = `translate(${dx}px, ${dy}px)`;
+  walk.joy.x = dx / max; walk.joy.y = -dy / max;
+};
+hud.joy.addEventListener('pointerdown', (e) => { walk.joy.id = e.pointerId; hud.joy.setPointerCapture(e.pointerId); joyMove(e); e.stopPropagation(); });
+hud.joy.addEventListener('pointermove', (e) => { if (e.pointerId === walk.joy.id) joyMove(e); });
+const joyEnd = (e) => { if (e.pointerId !== walk.joy.id) return; walk.joy = { x: 0, y: 0, id: null }; hud.knob.style.transform = ''; };
+hud.joy.addEventListener('pointerup', joyEnd); hud.joy.addEventListener('pointercancel', joyEnd);
+document.getElementById('btnExitWalk').addEventListener('click', () => exitWalk());
+if (isTouch) hud.tip.textContent = '左のスティックで移動／画面をドラッグして見回す';
 
 /* =====================================================================
    loop
@@ -2025,15 +2635,21 @@ function frame() {
   for (const m of mists) m.position.x += m.userData.drift * dt;
 
   // camera
-  if (opts.autoCam && !timeTween && performance.now() - lastInteract > 9000) controls.autoRotate = true;
-  controls.update();
-  controls.target.x = clamp(controls.target.x, -80, 90);
-  controls.target.z = clamp(controls.target.z, -90, 90);
-  controls.target.y = clamp(controls.target.y, -20, 60);
-  if (camera.position.y < 2) camera.position.y = 2;
+  if (walk.on) {
+    updateWalk(dt);
+  } else {
+    if (opts.autoCam && !timeTween && performance.now() - lastInteract > 9000) controls.autoRotate = true;
+    controls.update();
+    controls.target.x = clamp(controls.target.x, -80, 90);
+    controls.target.z = clamp(controls.target.z, -90, 90);
+    controls.target.y = clamp(controls.target.y, -20, 60);
+    if (camera.position.y < 2) camera.position.y = 2;
+  }
   scene.userData.sky.position.copy(camera.position);
+  const inside = walk.on && walk.place === 'inside';
+  if (inside) interior.update(dt, t);
 
-  audio.update(dt, t, windBase, gust, state.nightK, W);
+  audio.update(dt, t, windBase, gust, state.nightK, W, inside);
   composer.render();
   requestAnimationFrame(frame);
 }
@@ -2054,7 +2670,7 @@ window.addEventListener('resize', () => {
   applyTime(parseFloat(ui.time.value), true);
   ui.wind.dispatchEvent(new Event('input'));
   renderer.compile(scene, camera);
-  // dev hook: document.dispatchEvent(new CustomEvent('castle-debug', { detail: '{"cam":[x,y,z],"target":[x,y,z],"t":0.5}' }))
+  // dev hook: document.dispatchEvent(new CustomEvent('castle-debug', { detail: '{"cam":[x,y,z],"target":[x,y,z],"t":0.5,"season":"winter","walk":"in"}' }))
   document.addEventListener('castle-debug', (e) => {
     const d = JSON.parse(e.detail);
     opts.autoCam = false; controls.autoRotate = false; ui.cam.classList.remove('on');
@@ -2062,6 +2678,10 @@ window.addEventListener('resize', () => {
     if (d.target) controls.target.set(...d.target);
     if (d.t !== undefined) { ui.time.value = d.t; applyTime(d.t); }
     if (d.season) setSeason(d.season);
+    if (d.walk) { walk.on = true; controls.enabled = false; camera.fov = 65; camera.near = 0.1; camera.updateProjectionMatrix(); document.body.classList.add('walking'); setPlace(d.walk === 'in' ? 'inside' : 'outside'); }
+    if (d.pos) { walk.x = d.pos[0]; walk.z = d.pos[1]; }
+    if (d.yaw !== undefined) walk.yaw = d.yaw;
+    if (d.pitch !== undefined) walk.pitch = d.pitch;
     if (d.weather) setWeather(d.weather);
     controls.update();
   });
