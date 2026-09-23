@@ -85,6 +85,8 @@ const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerH
 camera.position.set(54, 22, 72);
 
 const U = { uTime: { value: 0 }, uWind: { value: 0.35 } };
+// season / weather driven uniforms shared by many materials
+const ENV = { uSnow: { value: 0 }, uWet: { value: 0 }, uGreen: { value: 0 }, uLeafAmt: { value: 1 } };
 
 const setProgress = (p) => { document.getElementById('ldbar').style.width = `${Math.round(p * 100)}%`; };
 const nextFrame = () => new Promise((r) => setTimeout(r, 16));
@@ -240,26 +242,26 @@ function makePaveTexture() {
   return toTex(c);
 }
 
-function makeGrassTexture() {
+function makeGrassTexture(green = false) {
   const S = 512, r = mulberry32(51);
   const c = makeCanvas(S), g = c.getContext('2d');
-  g.fillStyle = '#58602f'; g.fillRect(0, 0, S, S);
+  g.fillStyle = green ? '#4a6a26' : '#58602f'; g.fillRect(0, 0, S, S);
   for (let i = 0; i < 40; i++) {
     const x = r() * S, y = r() * S, rad = 30 + r() * 90;
     const gr = g.createRadialGradient(x, y, 0, x, y, rad);
-    gr.addColorStop(0, r() < 0.5 ? 'rgba(140,120,50,0.35)' : 'rgba(40,60,20,0.35)');
+    gr.addColorStop(0, r() < 0.5 ? (green ? 'rgba(110,140,50,0.35)' : 'rgba(140,120,50,0.35)') : 'rgba(40,60,20,0.35)');
     gr.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = gr; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
   }
   g.lineWidth = 1.2;
   for (let i = 0; i < 9000; i++) {
     const x = r() * S, y = r() * S, l = 3 + r() * 8, a = -Math.PI / 2 + (r() - 0.5) * 1.2;
-    g.strokeStyle = `hsl(${55 + r() * 40},${30 + r() * 25}%,${18 + r() * 26}%)`;
+    g.strokeStyle = green ? `hsl(${78 + r() * 34},${38 + r() * 25}%,${18 + r() * 26}%)` : `hsl(${55 + r() * 40},${30 + r() * 25}%,${18 + r() * 26}%)`;
     g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
   }
-  for (let i = 0; i < 520; i++) {
-    g.fillStyle = `hsla(${10 + r() * 36},${70 + r() * 25}%,${34 + r() * 22}%,0.95)`;
-    g.beginPath(); g.ellipse(r() * S, r() * S, 2 + r() * 3.5, 1.2 + r() * 2, r() * 3, 0, TAU); g.fill();
+  for (let i = 0; i < (green ? 160 : 520); i++) {
+    g.fillStyle = green ? (r() < 0.5 ? 'rgba(250,250,240,0.9)' : 'rgba(245,215,80,0.9)') : `hsla(${10 + r() * 36},${70 + r() * 25}%,${34 + r() * 22}%,0.95)`;
+    g.beginPath(); g.ellipse(r() * S, r() * S, green ? 1.6 : 2 + r() * 3.5, green ? 1.6 : 1.2 + r() * 2, r() * 3, 0, TAU); g.fill();
   }
   addNoise(g, S, 18, r);
   return toTex(c);
@@ -467,6 +469,8 @@ async function build() {
   const copperMat = new THREE.MeshStandardMaterial({ color: 0x5d8c78, roughness: 0.45, metalness: 0.55 });
   ghGlassMat = new THREE.MeshStandardMaterial({ color: 0xa8d4c4, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.38, depthWrite: false, emissive: 0xffc070, emissiveIntensity: 0, side: THREE.DoubleSide });
   materials = { stoneMat, trimMat, roofMat };
+  patchMat(stoneMat, { wetK: 0.8 }); patchMat(trimMat, { wetK: 0.8 }); patchMat(roofMat, { snowK: 1.15 });
+  patchMat(paveMat, {}); patchMat(grassMat, { map2: makeGrassTexture(true) });
 
   /* ---------- sky & lights ---------- */
   buildSky();
@@ -878,6 +882,7 @@ async function build() {
   buildFallingLeaves(oneLeafTex);
   buildBirds();
   buildMist();
+  buildPrecip();
 
   setProgress(1);
 }
@@ -889,7 +894,7 @@ function buildSky() {
   skyU = {
     topColor: { value: new THREE.Color() }, horizonColor: { value: new THREE.Color() }, groundColor: { value: new THREE.Color() },
     sunColor: { value: new THREE.Color() }, sunDir: { value: new THREE.Vector3(0, 1, 0) }, moonDir: { value: new THREE.Vector3(-0.35, 0.5, -0.8).normalize() },
-    uTime: U.uTime, night: { value: 0 },
+    uTime: U.uTime, night: { value: 0 }, uCloud: { value: 0.15 }, uOver: { value: 0 }, uFlash: { value: 0 },
   };
   const skyMat = new THREE.ShaderMaterial({
     uniforms: skyU, side: THREE.BackSide, depthWrite: false, fog: false,
@@ -903,7 +908,7 @@ function buildSky() {
     fragmentShader: /* glsl */`
       varying vec3 vDir;
       uniform vec3 topColor, horizonColor, groundColor, sunColor, sunDir, moonDir;
-      uniform float uTime, night;
+      uniform float uTime, night, uCloud, uOver, uFlash;
       float hash3(vec3 p){ p = fract(p*0.3183099 + 0.1); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
       float h2(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
@@ -916,6 +921,7 @@ function buildSky() {
         col = mix(col, groundColor, smoothstep(0.0, -0.3, h));
         float sd = max(dot(d, sunDir), 0.0);
         float vis = smoothstep(-0.12, 0.03, sunDir.y);
+        vis *= 1.0 - uOver * 0.97;
         col += sunColor * (pow(sd, 1800.0) * 40.0 + pow(sd, 90.0) * 0.5 + pow(sd, 7.0) * 0.28) * vis;
         // hazy warm band along horizon on the sun side
         col += sunColor * pow(1.0 - abs(h), 12.0) * pow(sd, 2.0) * 0.35 * vis;
@@ -923,18 +929,20 @@ function buildSky() {
           vec2 uv = d.xz / (h + 0.14);
           uv = uv * 0.8 + vec2(uTime * 0.006, uTime * 0.002);
           float c = fbm(uv * 1.4);
-          c = smoothstep(0.6, 0.92, c) * smoothstep(0.0, 0.2, h);
+          c = smoothstep(mix(0.6, 0.2, uCloud), mix(0.92, 0.62, uCloud), c) * smoothstep(0.0, 0.2, h);
           vec3 lit = mix(horizonColor, vec3(1.0, 0.98, 0.95), 0.45) + sunColor * pow(sd, 5.0) * 0.9;
           vec3 cc = mix(lit, topColor * 0.4 + horizonColor * 0.5, 0.35) * (1.0 - night * 0.9);
-          col = mix(col, cc, c * 0.7);
+          cc *= mix(1.0, 0.62 + 0.25 * fbm(uv * 3.1), uOver);
+          col = mix(col, cc, c * mix(0.7, 0.96, uCloud));
+          col += vec3(0.75, 0.8, 1.0) * uFlash * (0.5 + 0.9 * c);
           vec3 sp = d * 520.0;
           vec3 cell = floor(sp);
           float st = hash3(cell);
           float star = step(0.9965, st) * smoothstep(0.42, 0.0, length(fract(sp) - 0.5));
           star *= 0.6 + 0.4 * sin(uTime * 2.5 + st * 800.0);
-          col += vec3(0.9, 0.93, 1.0) * star * night * (1.0 - c) * smoothstep(0.03, 0.3, h) * 2.5;
+          col += vec3(0.9, 0.93, 1.0) * star * night * (1.0 - c) * (1.0 - uOver) * smoothstep(0.03, 0.3, h) * 2.5;
           float md = max(dot(d, moonDir), 0.0);
-          col += vec3(0.95, 0.97, 1.05) * (smoothstep(0.99985, 0.99992, md) * 3.0 + pow(md, 120.0) * 0.12) * night;
+          col += vec3(0.95, 0.97, 1.05) * (smoothstep(0.99985, 0.99992, md) * 3.0 + pow(md, 120.0) * 0.12) * night * (1.0 - uOver);
         }
         gl_FragColor = vec4(col, 1.0);
       }`,
@@ -970,28 +978,37 @@ function buildTerrain() {
   for (let i = 0; i < p.count; i++) p.setY(i, terrainH(p.getX(i), p.getZ(i)));
   g.computeVertexNormals();
   const n = g.attributes.normal;
-  const col = new Float32Array(p.count * 3);
-  const c = new THREE.Color(), tmp = new THREE.Color();
+  const col = new Float32Array(p.count * 3), col2 = new Float32Array(p.count * 3);
+  const c = new THREE.Color(), c2 = new THREE.Color(), tmp = new THREE.Color();
+  const greenA = srgb(0x4f6e2a), greenB = srgb(0x74873a);
   const grassA = srgb(0x6b7236), grassB = srgb(0x8c8440), autumn = srgb(0x9a5a26), autumn2 = srgb(0x7a3a1c), rock = srgb(0x7a7166), rockDark = srgb(0x4f4a44), snow = srgb(0xeef1f5);
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i), y = p.getY(i), z = p.getZ(i), ny = n.getY(i);
-    c.copy(grassA).lerp(grassB, smooth(-0.3, 0.5, fbm(x * 0.01, z * 0.01, 3)));
+    const gk = smooth(-0.3, 0.5, fbm(x * 0.01, z * 0.01, 3));
+    c.copy(grassA).lerp(grassB, gk);
+    c2.copy(greenA).lerp(greenB, gk);
     const f = fbm(x * 0.006 + 40, z * 0.006 - 20, 4);
     c.lerp(tmp.copy(autumn).lerp(autumn2, smooth(0, 0.6, noise2(x * 0.03, z * 0.03))), smooth(-0.05, 0.3, f) * 0.85);
+    c2.lerp(tmp.copy(greenA).multiplyScalar(0.7), smooth(-0.05, 0.3, f) * 0.7);
     const slope = 1 - ny;
-    c.lerp(tmp.copy(rock).lerp(rockDark, smooth(0, 1, noise2(x * 0.02, z * 0.02) * 0.5 + 0.5)), smooth(0.18, 0.45, slope));
+    const rk = smooth(0.18, 0.45, slope);
+    tmp.copy(rock).lerp(rockDark, smooth(0, 1, noise2(x * 0.02, z * 0.02) * 0.5 + 0.5));
+    c.lerp(tmp, rk); c2.lerp(tmp, rk);
     const snowLine = 230 + fbm(x * 0.004, z * 0.004, 3) * 70;
-    c.lerp(snow, smooth(snowLine, snowLine + 60, y) * smooth(0.75, 0.45, slope));
+    const sk = smooth(snowLine, snowLine + 60, y) * smooth(0.75, 0.45, slope);
+    c.lerp(snow, sk); c2.lerp(snow, sk);
     col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    col2[i * 3] = c2.r; col2[i * 3 + 1] = c2.g; col2[i * 3 + 2] = c2.b;
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('color2', new THREE.BufferAttribute(col2, 3));
   // subtle detail texture
   const dc = makeCanvas(256), dg = dc.getContext('2d'), r = mulberry32(5);
   dg.fillStyle = '#bbb'; dg.fillRect(0, 0, 256, 256); addNoise(dg, 256, 60, r);
   for (let i = 0; i < 300; i++) { dg.fillStyle = `rgba(${r() < 0.5 ? '255,255,255' : '0,0,0'},0.08)`; dg.beginPath(); dg.arc(r() * 256, r() * 256, 2 + r() * 10, 0, TAU); dg.fill(); }
   const dt = toTex(dc, false);
   scaleUV(g, SIZE / 12, SIZE / 12);
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, map: dt });
+  const mat = patchMat(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, map: dt }), { green2: true, wetK: 0.6 });
   const mesh = new THREE.Mesh(g, mat);
   mesh.receiveShadow = true;
   scene.add(mesh);
@@ -1037,7 +1054,7 @@ function buildRock({ cx, cz, rx, rz, H, seed, flare }) {
     for (let k = 0; k < 3; k++) { col[(i + k) * 3] = c.r; col[(i + k) * 3 + 1] = c.g; col[(i + k) * 3 + 2] = c.b; }
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }));
+  const mesh = new THREE.Mesh(g, patchMat(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }), { snowK: 0.9 }));
   mesh.castShadow = true; mesh.receiveShadow = true;
   scene.add(mesh);
   const outline = [];
@@ -1086,10 +1103,17 @@ function buildGreenhouse(copperMat, trimMat) {
 /* =====================================================================
    trees
    ===================================================================== */
-function applyWind(mat, flutter) {
+// Injects wind sway, snow cover, wetness, seasonal ground colour and leaf thinning into a standard material.
+function patchMat(mat, o = {}) {
+  const snowK = (o.snowK ?? 1).toFixed(2), wetK = (o.wetK ?? 1).toFixed(2);
   mat.onBeforeCompile = (sh) => {
-    sh.uniforms.uTime = U.uTime; sh.uniforms.uWind = U.uWind;
-    sh.vertexShader = 'uniform float uTime; uniform float uWind;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+    Object.assign(sh.uniforms, { uTime: U.uTime, uWind: U.uWind, uSnow: ENV.uSnow, uWet: ENV.uWet, uGreen: ENV.uGreen, uLeafAmt: ENV.uLeafAmt });
+    if (o.map2) sh.uniforms.uMap2 = { value: o.map2 };
+    let vs = sh.vertexShader, fs = sh.fragmentShader;
+    vs = 'uniform float uTime; uniform float uWind; uniform float uGreen;\nvarying vec3 vWN; varying vec3 vWP;\n'
+      + (o.leafAmt ? 'attribute float aRand; varying float vRand;\n' : '')
+      + (o.green2 ? 'attribute vec3 color2;\n' : '') + vs;
+    if (o.wind) vs = vs.replace('#include <begin_vertex>', `#include <begin_vertex>
       #ifdef USE_INSTANCING
         vec3 ip = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
       #else
@@ -1100,12 +1124,55 @@ function applyWind(mat, flutter) {
       float sw = (sin(uTime * 1.2 + ph) * 0.6 + sin(uTime * 2.6 + ph * 1.7) * 0.25) * (0.25 + uWind * 1.2);
       transformed.x += sw * hgt * hgt * 0.0025;
       transformed.z += sw * hgt * hgt * 0.0016;
-      ${flutter ? 'transformed += normal * sin(uTime * (5.0 + uWind * 6.0) + position.x * 3.0 + position.z * 2.0 + ph) * 0.06 * (0.2 + uWind);' : ''}`);
-    if (flutter) {
-      sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += diffuseColor.rgb * 0.05;');
-    }
+      ${o.flutter ? 'transformed += normal * sin(uTime * (5.0 + uWind * 6.0) + position.x * 3.0 + position.z * 2.0 + ph) * 0.06 * (0.2 + uWind);' : ''}`);
+    if (o.green2) vs = vs.replace('#include <color_vertex>', '#include <color_vertex>\n vColor.rgb = mix(vColor.rgb, color2, uGreen);');
+    vs = vs.replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
+      vWN = normalize((vec4(transformedNormal, 0.0) * viewMatrix).xyz);
+      vec4 eWP = vec4(transformed, 1.0);
+      #ifdef USE_INSTANCING
+        eWP = instanceMatrix * eWP;
+      #endif
+      vWP = (modelMatrix * eWP).xyz;
+      ${o.leafAmt ? 'vRand = aRand;' : ''}`);
+    fs = `uniform float uSnow; uniform float uWet; uniform float uGreen; uniform float uLeafAmt;
+      varying vec3 vWN; varying vec3 vWP;
+      ${o.leafAmt ? 'varying float vRand;' : ''}
+      ${o.map2 ? 'uniform sampler2D uMap2;' : ''}
+      float eH(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+      float eVN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(eH(i), eH(i+vec2(1,0)), f.x), mix(eH(i+vec2(0,1)), eH(i+vec2(1,1)), f.x), f.y); }
+    ` + fs;
+    if (o.map2) fs = fs.replace('#include <map_fragment>', `#ifdef USE_MAP
+        diffuseColor *= mix(texture2D(map, vMapUv), texture2D(uMap2, vMapUv), uGreen);
+      #endif`);
+    if (o.leafAmt) fs = fs.replace('#include <alphatest_fragment>', '#include <alphatest_fragment>\n if (vRand > uLeafAmt) discard;');
+    fs = fs.replace('#include <color_fragment>', `#include <color_fragment>
+      float eUp = clamp(vWN.y, 0.0, 1.0);
+      float eN = eVN(vWP.xz * 1.3) * 0.6 + eVN(vWP.xz * 5.0) * 0.4;
+      float eSnow = smoothstep(0.62 - uSnow * 0.45, 0.8 - uSnow * 0.35, eUp + (eN - 0.5) * 0.3) * smoothstep(0.0, 0.3, uSnow) * ${snowK};
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.91, 0.97), clamp(eSnow, 0.0, 1.0));
+      float eWet = uWet * ${wetK} * (1.0 - clamp(eSnow, 0.0, 1.0));
+      diffuseColor.rgb *= 1.0 - eWet * 0.4;`);
+    fs = fs.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+      roughnessFactor = mix(roughnessFactor, 0.45, eWet * 0.6);
+      roughnessFactor = mix(roughnessFactor, 0.1, eWet * smoothstep(0.55, 0.95, eUp) * smoothstep(0.35, 0.65, eN));
+      roughnessFactor = mix(roughnessFactor, 0.8, clamp(eSnow, 0.0, 1.0));`);
+    if (o.flutter) fs = fs.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += diffuseColor.rgb * 0.05;');
+    sh.vertexShader = vs; sh.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => 'wind' + flutter;
+  const key = 'env' + JSON.stringify(o, (k, v) => (v && v.isTexture ? 'tex' : v));
+  mat.customProgramCacheKey = () => key;
+  return mat;
+}
+// leaf thinning must also apply to the shadow pass
+function patchLeafDepth(mat) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uLeafAmt = ENV.uLeafAmt;
+    sh.vertexShader = 'attribute float aRand; varying float vRand;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vRand = aRand;');
+    sh.fragmentShader = 'uniform float uLeafAmt; varying float vRand;\n' + sh.fragmentShader.replace('#include <alphatest_fragment>', '#include <alphatest_fragment>\n if (vRand > uLeafAmt) discard;');
+  };
+  mat.customProgramCacheKey = () => 'leafdepth';
+  return mat;
 }
 
 function buildTreeTemplate(seed, o) {
@@ -1129,7 +1196,7 @@ function buildTreeTemplate(seed, o) {
     }
     trunkGeo = mergeGeometries(parts);
   }
-  const pos = [], nor = [], uv = [], col = [], idx = [];
+  const pos = [], nor = [], uv = [], col = [], idx = [], rnd = [];
   const cy = H - CH * 0.5;
   const q = new THREE.Quaternion(), e = new THREE.Euler(), va = new THREE.Vector3(), vb = new THREE.Vector3(), p = new THREE.Vector3(), nn = new THREE.Vector3();
   for (let i = 0; i < N; i++) {
@@ -1151,9 +1218,11 @@ function buildTreeTemplate(seed, o) {
     const br = 0.72 + r() * 0.4, ao = 0.5 + 0.5 * rad;
     const cr = br * (0.93 + r() * 0.14) * ao, cg = br * (0.84 + r() * 0.22) * ao, cb = br * (0.88 + r() * 0.15) * ao;
     for (let k = 0; k < 4; k++) col.push(cr, cg, cb);
+    const rv = r(); rnd.push(rv, rv, rv, rv);
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
   const lg = new THREE.BufferGeometry();
+  lg.setAttribute('aRand', new THREE.Float32BufferAttribute(rnd, 1));
   lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   lg.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   lg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
@@ -1223,12 +1292,14 @@ function buildConiferCards(seed, H, R) {
 
 function buildTrees(barkTex, leafTex, plateau, pillar) {
   const leafMat = new THREE.MeshStandardMaterial({ map: leafTex, alphaTest: 0.45, side: THREE.DoubleSide, vertexColors: true, roughness: 0.82 });
-  applyWind(leafMat, true);
-  const leafDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: leafTex, alphaTest: 0.45 });
+  patchMat(leafMat, { wind: true, flutter: true, leafAmt: true, snowK: 0.5, wetK: 0.3 });
+  const leafDepth = patchLeafDepth(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: leafTex, alphaTest: 0.45 }));
+  const conLeafMat = patchMat(new THREE.MeshStandardMaterial({ map: leafTex, alphaTest: 0.45, side: THREE.DoubleSide, vertexColors: true, roughness: 0.82 }), { wind: true, flutter: true, snowK: 1.1, wetK: 0.3 });
+  const conDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: leafTex, alphaTest: 0.45 });
   const barkMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.8 });
-  applyWind(barkMat, false);
+  patchMat(barkMat, { wind: true, snowK: 0.6, wetK: 0.7 });
   const conMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide, flatShading: true });
-  applyWind(conMat, false);
+  patchMat(conMat, { wind: true, snowK: 1.1, wetK: 0.3 });
 
   const nearT = [
     buildTreeTemplate(1, { height: 15, crownR: 2.8, crownH: 10, cards: 230, cardSize: 1.7, trunkR: 0.3 }),
@@ -1327,20 +1398,185 @@ function buildTrees(barkTex, leafTex, plateau, pillar) {
   };
   nearT.forEach((tpl, ti) => {
     const items = near.filter((o) => o.t === ti);
-    instance(tpl.leaves, leafMat, items, true, leafDepth);
+    registerSeasonal(instance(tpl.leaves, leafMat, items, true, leafDepth), ti === 3);
     if (tpl.trunk) instance(tpl.trunk, barkMat, items.map((o) => ({ ...o, col: null })), true);
     // falling-leaf spawn points = crowns of near trees
     if (ti < 3) for (const o of items) if (o.y > -2) leafSpawnPoints.push({ x: o.x, y: o.y + tpl.crown.cy * o.s, z: o.z, r: tpl.crown.CR * o.s, h: tpl.crown.CH * o.s * 0.5, col: o.col });
   });
   farT.forEach((tpl, ti) => {
     const items = far.filter((o) => o.t === ti);
-    instance(tpl.leaves, leafMat, items, false);
+    registerSeasonal(instance(tpl.leaves, leafMat, items, false), false);
     instance(tpl.trunk, barkMat, items.map((o) => ({ ...o, col: null })), false);
   });
   const nearCons = cons.slice(0, 5), farCons = cons.slice(5);
-  instance(conNear.leaves, leafMat, nearCons.map((o) => ({ ...o, col: srgb(0x3d5a2e).multiplyScalar(0.8 + r() * 0.3) })), true, leafDepth);
+  instance(conNear.leaves, conLeafMat, nearCons.map((o) => ({ ...o, col: srgb(0x3d5a2e).multiplyScalar(0.8 + r() * 0.3) })), true, conDepth);
   instance(conNear.trunk, barkMat, nearCons, true);
   instance(conGeo, conMat, farCons, false);
+}
+
+/* =====================================================================
+   seasons
+   ===================================================================== */
+const PAL = {
+  sakura: [0xf6c3d0, 0xf9d6df, 0xeea6ba, 0xfbe4ea].map(srgb),
+  fresh: [0x9cc653, 0x86b845, 0xb3d466, 0x77a83c].map(srgb),
+  summer: [0x4d7a2a, 0x5c8a30, 0x3f6b24, 0x6e9636, 0x557f2c].map(srgb),
+  azalea: [0xd9477a, 0xe86a9a, 0xc23a6a, 0xf29ab8].map(srgb),
+};
+const SEASONS = {
+  spring: { name: '春', en: 'Spring', leafAmt: 0.92, green: 1, snow: 0, fall: 0.6, fallSize: 0.55, fallCols: PAL.sakura },
+  summer: { name: '夏', en: 'Summer', leafAmt: 1, green: 1, snow: 0, fall: 0.08, fallSize: 1, fallCols: PAL.summer },
+  autumn: { name: '秋', en: 'Autumn', leafAmt: 1, green: 0, snow: 0, fall: 1, fallSize: 1, fallCols: null },
+  winter: { name: '冬', en: 'Winter', leafAmt: 0.05, green: 0.35, snow: 0.95, fall: 0, fallSize: 1, fallCols: null },
+};
+const seasonal = [];
+const SS = { key: 'autumn', k: 1, from: null, leafFrom: 1, greenFrom: 0, fallFrac: 1 };
+function registerSeasonal(im, shrub) {
+  if (!im) return;
+  const r = mulberry32(im.count * 7 + (shrub ? 3 : 1));
+  const n = im.count, autumn = im.instanceColor.array.slice();
+  const spring = new Float32Array(n * 3), summer = new Float32Array(n * 3), winter = new Float32Array(n * 3);
+  const pick = (l) => l[Math.floor(r() * l.length)];
+  for (let i = 0; i < n; i++) {
+    const k = 0.85 + r() * 0.3;
+    const cs = shrub ? (r() < 0.55 ? pick(PAL.azalea) : pick(PAL.fresh)) : (r() < 0.6 ? pick(PAL.sakura) : pick(PAL.fresh));
+    const cu = pick(PAL.summer);
+    spring[i * 3] = cs.r * k; spring[i * 3 + 1] = cs.g * k; spring[i * 3 + 2] = cs.b * k;
+    summer[i * 3] = cu.r * k; summer[i * 3 + 1] = cu.g * k; summer[i * 3 + 2] = cu.b * k;
+    for (let j = 0; j < 3; j++) winter[i * 3 + j] = autumn[i * 3 + j] * 0.45;
+  }
+  seasonal.push({ im, pal: { spring, summer, autumn, winter } });
+}
+function setSeason(key, instant = false) {
+  SS.key = key; SS.k = instant ? 1 : 0;
+  SS.from = seasonal.map((m) => m.im.instanceColor.array.slice());
+  SS.leafFrom = ENV.uLeafAmt.value; SS.greenFrom = ENV.uGreen.value;
+  if (instant) stepSeason(0);
+  const S = SEASONS[key];
+  document.querySelector('#title h1').textContent = `${S.name}ノ古城`;
+  document.querySelector('#title p').textContent = `The Castle in ${S.en}`;
+  if (fallingLeaves) fallingLeaves.material.map = key === 'spring' ? petalTex : leafTexOne;
+  document.querySelectorAll('#seasons button').forEach((b) => b.classList.toggle('on', b.dataset.season === key));
+}
+function stepSeason(dt) {
+  if (SS.k >= 1 && SS.from === null) return;
+  SS.k = Math.min(1, SS.k + dt / 2.8);
+  const e = SS.k * SS.k * (3 - 2 * SS.k), S = SEASONS[SS.key];
+  seasonal.forEach((m, mi) => {
+    const a = m.im.instanceColor.array, f = SS.from[mi], to = m.pal[SS.key];
+    for (let i = 0; i < a.length; i++) a[i] = f[i] + (to[i] - f[i]) * e;
+    m.im.instanceColor.needsUpdate = true;
+  });
+  ENV.uLeafAmt.value = lerp(SS.leafFrom, S.leafAmt, e);
+  ENV.uGreen.value = lerp(SS.greenFrom, S.green, e);
+  if (SS.k >= 1) SS.from = null;
+}
+
+/* =====================================================================
+   weather
+   ===================================================================== */
+const WEATHERS = {
+  clear: { cloud: 0.15, over: 0, rain: 0, snow: 0, fog: 0, storm: 0 },
+  cloudy: { cloud: 0.85, over: 0.6, rain: 0, snow: 0, fog: 0.1, storm: 0 },
+  rain: { cloud: 1, over: 0.8, rain: 1, snow: 0, fog: 0.35, storm: 0 },
+  storm: { cloud: 1, over: 0.95, rain: 1.5, snow: 0, fog: 0.4, storm: 1 },
+  fog: { cloud: 0.5, over: 0.5, rain: 0, snow: 0, fog: 1, storm: 0 },
+  snow: { cloud: 0.95, over: 0.7, rain: 0, snow: 1, fog: 0.4, storm: 0 },
+};
+const W = { key: 'clear', cloud: 0.15, over: 0, rain: 0, snow: 0, fog: 0, storm: 0, flash: 0, boltT: 4 };
+const greyDay = srgb(0x9aa2aa), greyNight = srgb(0x0b0e13), greyC = new THREE.Color();
+let rainFx, snowFx;
+function setWeather(key) {
+  W.key = key;
+  document.querySelectorAll('#weathers button').forEach((b) => b.classList.toggle('on', b.dataset.weather === key));
+}
+const approach = (v, t, rate) => (v < t ? Math.min(t, v + rate) : Math.max(t, v - rate));
+function stepWeather(dt) {
+  const T = WEATHERS[W.key];
+  for (const k of ['cloud', 'over', 'rain', 'snow', 'fog', 'storm']) W[k] = approach(W[k], T[k], dt * 0.3);
+  ENV.uWet.value = approach(ENV.uWet.value, Math.min(1, W.rain), dt * (W.rain > 0.3 ? 0.12 : 0.035));
+  const snowTarget = Math.max(SEASONS[SS.key].snow, W.snow * 0.9);
+  ENV.uSnow.value = approach(ENV.uSnow.value, snowTarget, dt * (SS.k < 1 ? 0.45 : W.snow > 0.3 ? 0.04 : 0.06));
+  // lightning
+  W.flash = Math.max(0, W.flash - dt * 3.5);
+  if (W.storm > 0.6) {
+    W.boltT -= dt;
+    if (W.boltT <= 0) {
+      W.flash = 1; W.boltT = 4 + Math.random() * 9;
+      setTimeout(() => { W.flash = Math.max(W.flash, 0.7); }, 120 + Math.random() * 120);
+      audio.thunder(0.4 + Math.random() * 1.6);
+    }
+  }
+}
+function buildPrecip() {
+  const box = new THREE.Vector3(64, 44, 64);
+  // rain: short line streaks, world-anchored and wrapped around the camera
+  const RN = 12000, rp = new Float32Array(RN * 6), re = new Float32Array(RN * 2);
+  for (let i = 0; i < RN; i++) {
+    const x = Math.random(), y = Math.random(), z = Math.random();
+    rp.set([x, y, z, x, y, z], i * 6); re[i * 2 + 1] = 1;
+  }
+  const rg = new THREE.BufferGeometry();
+  rg.setAttribute('position', new THREE.BufferAttribute(rp, 3));
+  rg.setAttribute('aEnd', new THREE.BufferAttribute(re, 1));
+  const common = { uTime: U.uTime, uCam: { value: camera.position }, uBox: { value: box }, uWind: { value: new THREE.Vector2() }, uAmt: { value: 0 }, uColor: { value: new THREE.Color() } };
+  const wrap = `
+      vec3 w;
+      w.xz = uCam.xz + mod(p.xz - uCam.xz, uBox.xz) - uBox.xz * 0.5;
+      w.y = uCam.y + mod(p.y - uCam.y, uBox.y) - uBox.y * 0.5;`;
+  rainFx = new THREE.LineSegments(rg, new THREE.ShaderMaterial({
+    uniforms: { ...common }, transparent: true, depthWrite: false,
+    vertexShader: `attribute float aEnd; uniform float uTime, uAmt; uniform vec3 uCam, uBox; uniform vec2 uWind; varying float vA;
+      void main(){
+        vec3 s = position;
+        float speed = 22.0 + s.x * 8.0;
+        vec3 p = s * uBox;
+        p.y -= uTime * speed; p.x += uWind.x * uTime; p.z += uWind.y * uTime;
+        ${wrap}
+        vec3 dir = normalize(vec3(uWind.x, -speed, uWind.y));
+        w -= dir * aEnd * (0.9 + s.z * 0.7);
+        float d = length(w - uCam);
+        vA = step(fract(s.x * 7.31 + s.z * 3.7), uAmt) * smoothstep(32.0, 10.0, d) * smoothstep(1.0, 3.0, d);
+        gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+      }`,
+    fragmentShader: `uniform vec3 uColor; varying float vA;
+      void main(){ if (vA < 0.01) discard; gl_FragColor = vec4(uColor, vA * 0.5); }`,
+  }));
+  // snow: soft point sprites drifting with the wind
+  const SN = 16000, sp = new Float32Array(SN * 3);
+  for (let i = 0; i < SN * 3; i++) sp[i] = Math.random();
+  const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+  snowFx = new THREE.Points(sg, new THREE.ShaderMaterial({
+    uniforms: { ...common, uWind: { value: new THREE.Vector2() }, uAmt: { value: 0 }, uColor: { value: new THREE.Color() }, uSize: { value: 70 * DPR } }, transparent: true, depthWrite: false,
+    vertexShader: `uniform float uTime, uAmt, uSize; uniform vec3 uCam, uBox; uniform vec2 uWind; varying float vA;
+      void main(){
+        vec3 s = position;
+        vec3 p = s * uBox;
+        p.y -= uTime * (1.1 + s.x * 0.9);
+        p.x += uWind.x * uTime * 0.5 + sin(uTime * 0.8 + s.z * 40.0) * 1.3;
+        p.z += uWind.y * uTime * 0.5 + cos(uTime * 0.7 + s.x * 40.0) * 1.3;
+        ${wrap}
+        float d = length(w - uCam);
+        vA = step(fract(s.y * 13.7 + s.x * 5.1), uAmt) * smoothstep(32.0, 14.0, d);
+        vec4 mv = viewMatrix * vec4(w, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = uSize * (0.5 + s.z * 0.8) / max(-mv.z, 0.5);
+      }`,
+    fragmentShader: `uniform vec3 uColor; varying float vA;
+      void main(){ float a = smoothstep(0.5, 0.12, length(gl_PointCoord - 0.5)) * vA; if (a < 0.01) discard; gl_FragColor = vec4(uColor, a * 0.9); }`,
+  }));
+  for (const fx of [rainFx, snowFx]) { fx.frustumCulled = false; fx.renderOrder = 5; scene.add(fx); }
+}
+function updatePrecip(wind) {
+  const lightK = 0.2 + 0.8 * state.dayK + W.flash * 1.5;
+  rainFx.material.uniforms.uAmt.value = Math.min(1, W.rain) * 0.95;
+  rainFx.material.uniforms.uWind.value.set(wind.x, wind.z);
+  rainFx.material.uniforms.uColor.value.copy(fogColor).multiplyScalar(1.1).addScalar(0.08 * lightK);
+  rainFx.visible = W.rain > 0.01;
+  snowFx.material.uniforms.uAmt.value = W.snow;
+  snowFx.material.uniforms.uWind.value.set(wind.x, wind.z);
+  snowFx.material.uniforms.uColor.value.setRGB(0.95, 0.97, 1.0).multiplyScalar(0.25 + 0.75 * lightK);
+  snowFx.visible = W.snow > 0.01;
 }
 
 /* =====================================================================
@@ -1370,13 +1606,25 @@ function spawnLeaf(i, burstAt = null) {
     if (!s) return;
     LF.pos[o] = s.x + (lr() - 0.5) * s.r * 1.6; LF.pos[o + 1] = s.y + (lr() - 0.3) * s.h; LF.pos[o + 2] = s.z + (lr() - 0.5) * s.r * 1.6;
     LF.vel[o] = 0; LF.vel[o + 1] = -0.3; LF.vel[o + 2] = 0;
-    if (fallingLeaves && s.col) fallingLeaves.setColorAt(i, s.col.clone().multiplyScalar(0.8 + lr() * 0.4));
+    const fc = SEASONS[SS.key].fallCols;
+    const col = fc ? fc[Math.floor(lr() * fc.length)] : s.col;
+    if (fallingLeaves && col) fallingLeaves.setColorAt(i, col.clone().multiplyScalar(0.8 + lr() * 0.4));
   }
   LF.rot[o] = lr() * TAU; LF.rot[o + 1] = lr() * TAU; LF.rot[o + 2] = lr() * TAU;
   LF.spin[o] = (lr() - 0.5) * 6; LF.spin[o + 1] = (lr() - 0.5) * 4; LF.spin[o + 2] = (lr() - 0.5) * 6;
   LF.rest[i] = 0; LF.phase[i] = lr() * TAU;
 }
+let petalTex, leafTexOne;
+function makePetalTexture() {
+  const c = makeCanvas(64), g = c.getContext('2d');
+  g.translate(32, 32); g.fillStyle = '#fff';
+  g.beginPath(); g.moveTo(0, 26);
+  g.bezierCurveTo(24, 14, 22, -18, 6, -24); g.lineTo(0, -16); g.lineTo(-6, -24);
+  g.bezierCurveTo(-22, -18, -24, 14, 0, 26); g.fill();
+  return toTex(c, true, false);
+}
 function buildFallingLeaves(tex) {
+  leafTexOne = tex; petalTex = makePetalTexture();
   const geo = new THREE.PlaneGeometry(0.34, 0.34);
   const mat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.75 });
   fallingLeaves = new THREE.InstancedMesh(geo, mat, LEAF_N);
@@ -1398,8 +1646,12 @@ const _d = new THREE.Object3D();
 const windDir = new THREE.Vector3(0.8, 0, 0.35).normalize();
 function updateLeaves(dt, t, windStrength) {
   const wx = windDir.x * windStrength, wz = windDir.z * windStrength;
+  const S = SEASONS[SS.key];
+  SS.fallFrac = approach(SS.fallFrac, S.fall, dt * 0.3);
+  const active = Math.floor(LEAF_N * SS.fallFrac), sizeK = S.fallSize;
   for (let i = 0; i < LEAF_N; i++) {
     const o = i * 3;
+    if (i >= active) { _d.scale.setScalar(0); _d.updateMatrix(); fallingLeaves.setMatrixAt(i, _d.matrix); continue; }
     if (LF.rest[i] > 0) {
       LF.rest[i] -= dt;
       // gusts can lift resting leaves
@@ -1422,7 +1674,7 @@ function updateLeaves(dt, t, windStrength) {
     }
     _d.position.set(LF.pos[o], LF.pos[o + 1], LF.pos[o + 2]);
     _d.rotation.set(LF.rot[o], LF.rot[o + 1], LF.rot[o + 2]);
-    _d.scale.setScalar(LF.size[i]);
+    _d.scale.setScalar(LF.size[i] * sizeK);
     _d.updateMatrix();
     fallingLeaves.setMatrixAt(i, _d.matrix);
   }
@@ -1459,6 +1711,7 @@ function buildMist() {
     sp.position.set(x, Math.min(terrainH(x, z), -20) + 8 + r() * 14, z);
     sp.scale.set(260 + r() * 220, 60 + r() * 40, 1);
     sp.userData.drift = (r() - 0.5) * 2;
+    sp.userData.op = sp.material.opacity;
     scene.add(sp); mists.push(sp);
   }
 }
@@ -1473,7 +1726,7 @@ const P = {
   gDay: srgb(0x6f6a52), gNight: srgb(0x06080d),
 };
 const sunDir = new THREE.Vector3();
-const state = { t: 0.577, nightK: 0, dayK: 1, envT: -1, hour: 15.6 };
+const state = { t: 0.577, nightK: 0, dayK: 1, envT: -1, envOv: 0, hour: 15.6, label: '' };
 const tmpC = new THREE.Color();
 function applyTime(t, force = false) {
   state.t = t;
@@ -1493,35 +1746,47 @@ function applyTime(t, force = false) {
   skyU.sunColor.value.copy(P.sunLow).lerp(P.sunMid, smooth(0, 12, el)).lerp(P.sunHigh, smooth(14, 40, el));
   skyU.sunDir.value.copy(sunDir);
   skyU.night.value = nightK;
+  // overcast: pull the sky toward grey
+  const ov = W.over;
+  greyC.copy(greyNight).lerp(greyDay, duskK * (0.35 + 0.65 * dayK));
+  skyU.topColor.value.lerp(tmpC.copy(greyC).multiplyScalar(0.85), ov * 0.85);
+  skyU.horizonColor.value.lerp(greyC, ov * 0.8);
+  skyU.uCloud.value = W.cloud; skyU.uOver.value = ov; skyU.uFlash.value = W.flash;
 
   sunLight.color.copy(skyU.sunColor.value);
-  sunLight.intensity = 3.4 * smooth(-1.5, 7, el);
-  sunLight.castShadow = el > -1.5;
+  sunLight.intensity = 3.4 * smooth(-1.5, 7, el) * (1 - 0.88 * ov);
+  sunLight.castShadow = sunLight.intensity > 0.25;
   sunLight.position.copy(sunLight.target.position).addScaledVector(sunDir, 450);
-  moonLight.intensity = 1.0 * nightK;
+  moonLight.intensity = 1.0 * nightK * (1 - 0.7 * ov);
   hemi.color.copy(skyU.topColor.value).lerp(skyU.horizonColor.value, 0.4);
   hemi.groundColor.copy(P.gDay).multiplyScalar(0.2 + 0.8 * duskK);
-  hemi.intensity = lerp(0.5, 0.95, smooth(-10, 12, el));
+  hemi.intensity = lerp(0.5, 0.95, smooth(-10, 12, el)) * (1 + 0.45 * ov) + W.flash * 4;
 
   fogColor.copy(skyU.horizonColor.value).lerp(skyU.topColor.value, 0.28);
+  fogColor.lerp(greyC, Math.max(ov, W.fog) * 0.6);
+  if (W.flash > 0) fogColor.lerp(tmpC.setRGB(0.7, 0.75, 0.9), W.flash * 0.4);
   scene.fog.color.copy(fogColor);
-  scene.fog.density = lerp(0.0007, 0.0009, 1 - dayK);
+  scene.fog.density = lerp(0.0007, 0.0009, 1 - dayK) * (1 + ov * 0.7 + W.fog * 9 + Math.min(1, W.rain) * 2.2 + W.snow * 3.5);
   renderer.toneMappingExposure = lerp(1.0, 1.35, nightK);
   scene.environmentIntensity = lerp(0.55, 0.25, nightK);
 
   glassMat.emissiveIntensity = 0.04 + (1 - dayK) * 0.8 + nightK * 2.6;
   lampMat.emissiveIntensity = 0.5 + (1 - dayK) * 2 + nightK * 6;
   ghGlassMat.emissiveIntensity = nightK * 0.35;
-  for (const m of mists) m.material.color.copy(fogColor).multiplyScalar(1.05 + (1 - dayK) * 0.2);
+  for (const m of mists) {
+    m.material.color.copy(fogColor).multiplyScalar(1.05 + (1 - dayK) * 0.2);
+    m.material.opacity = m.userData.op * (1 + W.fog * 2.4 + Math.min(1, W.rain) * 0.8);
+  }
 
-  if (force || Math.abs(t - state.envT) > 0.015) {
-    state.envT = t;
+  if (force || Math.abs(t - state.envT) > 0.015 || Math.abs(ov - state.envOv) > 0.05) {
+    state.envT = t; state.envOv = ov;
     if (envRT) envRT.dispose();
     envRT = pmrem.fromScene(skyScene, 0, 1, 3000);
     scene.environment = envRT.texture;
   }
   const hh = Math.floor(hour) % 24, mm = Math.floor((hour % 1) * 60);
-  document.getElementById('timeLabel').textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  const label = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  if (label !== state.label) { state.label = label; document.getElementById('timeLabel').textContent = label; }
 }
 
 /* =====================================================================
@@ -1587,10 +1852,12 @@ let timeTween = null;
 ui.time.addEventListener('input', () => { timeTween = null; applyTime(parseFloat(ui.time.value)); });
 const windNames = ['凪', 'そよ風', '秋風', '木枯らし', '疾風'];
 ui.wind.addEventListener('input', () => { ui.windLabel.textContent = windNames[Math.min(4, Math.floor(parseFloat(ui.wind.value) * 4.999))]; });
-document.querySelectorAll('.chips button').forEach((btn) => btn.addEventListener('click', () => {
+document.querySelectorAll('#timeChips button').forEach((btn) => btn.addEventListener('click', () => {
   const target = (parseFloat(btn.dataset.hour) - 5.5) / 17.5;
   timeTween = { from: state.t, to: target, k: 0 };
 }));
+document.querySelectorAll('#seasons button').forEach((btn) => btn.addEventListener('click', () => { if (btn.dataset.season !== SS.key) setSeason(btn.dataset.season); }));
+document.querySelectorAll('#weathers button').forEach((btn) => btn.addEventListener('click', () => setWeather(btn.dataset.weather)));
 const toggle = (btn, key, fn) => btn.addEventListener('click', () => { opts[key] = !opts[key]; btn.classList.toggle('on', opts[key]); fn?.(opts[key]); });
 toggle(ui.cam, 'autoCam', (on) => { if (on) lastInteract = performance.now() - 7000; else controls.autoRotate = false; });
 toggle(ui.flow, 'flow');
@@ -1600,7 +1867,7 @@ ui.shot.addEventListener('click', () => {
   composer.render();
   const a = document.createElement('a');
   a.href = renderer.domElement.toDataURL('image/png');
-  a.download = `autumn-castle-${Date.now()}.png`;
+  a.download = `castle-${SS.key}-${W.key}-${Date.now()}.png`;
   a.click();
 });
 window.addEventListener('keydown', (e) => {
@@ -1627,7 +1894,7 @@ canvas.addEventListener('pointerup', (e) => {
    ambient sound (WebAudio synthesis — no files)
    ===================================================================== */
 const audio = (() => {
-  let ctx, master, windGain, windFilter, rustleGain, running = false, birdTimer = 0;
+  let ctx, master, windGain, windFilter, rustleGain, rainGain, brownBuf, running = false, birdTimer = 0;
   function noiseBuffer(brown) {
     const len = ctx.sampleRate * 4, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
     let last = 0;
@@ -1645,6 +1912,12 @@ const audio = (() => {
     const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3200; bp.Q.value = 0.6;
     rustleGain = ctx.createGain(); rustleGain.gain.value = 0.02;
     rs.connect(bp).connect(rustleGain).connect(master); rs.start();
+    const rn = ctx.createBufferSource(); rn.buffer = noiseBuffer(false); rn.loop = true;
+    const rf = ctx.createBiquadFilter(); rf.type = 'bandpass'; rf.frequency.value = 1400; rf.Q.value = 0.35;
+    const rh = ctx.createBiquadFilter(); rh.type = 'highshelf'; rh.frequency.value = 4000; rh.gain.value = -8;
+    rainGain = ctx.createGain(); rainGain.gain.value = 0;
+    rn.connect(rf).connect(rh).connect(rainGain).connect(master); rn.start();
+    brownBuf = noiseBuffer(true);
   }
   function chirp(night) {
     const t0 = ctx.currentTime;
@@ -1664,14 +1937,29 @@ const audio = (() => {
     start() { if (!ctx) init(); ctx.resume(); running = true; master.gain.setTargetAtTime(0.7, ctx.currentTime, 0.8); },
     stop() { if (!ctx) return; running = false; master.gain.setTargetAtTime(0, ctx.currentTime, 0.4); },
     gust() { if (running) windGain.gain.setTargetAtTime(0.9, ctx.currentTime, 0.05); },
-    update(dt, t, wind, g, night) {
+    thunder(delay) {
+      if (!running) return;
+      const t0 = ctx.currentTime + delay;
+      const src = ctx.createBufferSource(); src.buffer = brownBuf;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 220;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(1.4, t0 + 0.08);
+      g.gain.setTargetAtTime(0.5, t0 + 0.3, 0.3); g.gain.setTargetAtTime(0, t0 + 1.2, 0.9);
+      src.connect(lp).connect(g).connect(master); src.start(t0, Math.random() * 2); src.stop(t0 + 4.5);
+    },
+    update(dt, t, wind, g, night, w) {
       if (!running) return;
       const now = ctx.currentTime;
+      rainGain.gain.setTargetAtTime(Math.min(1.3, w.rain) * 0.32, now, 0.6);
       windGain.gain.setTargetAtTime(0.12 + wind * 0.35 + g * 0.5 + Math.sin(t * 0.37) * 0.05 * (0.5 + wind), now, 0.4);
       windFilter.frequency.setTargetAtTime(260 + wind * 500 + g * 700 + Math.sin(t * 0.23) * 80, now, 0.4);
       rustleGain.gain.setTargetAtTime(0.008 + wind * 0.035 + g * 0.05, now, 0.3);
       birdTimer -= dt;
-      if (birdTimer <= 0) { birdTimer = night > 0.5 ? 0.9 + Math.random() * 1.5 : 2 + Math.random() * 6; chirp(night > 0.5); }
+      if (birdTimer <= 0) {
+        birdTimer = night > 0.5 ? 0.9 + Math.random() * 1.5 : 2 + Math.random() * 6;
+        const quiet = w.rain > 0.3 || w.snow > 0.3 || (SS.key === 'winter' && night > 0.5);
+        if (!quiet) chirp(night > 0.5);
+      }
     },
   };
 })();
@@ -1697,14 +1985,19 @@ function frame() {
     let v = state.t + dt / 240; if (v > 1) v -= 1;
     ui.time.value = v; applyTime(v);
   }
+  stepSeason(dt);
+  stepWeather(dt);
+  applyTime(state.t);
 
   // wind
   gust = Math.max(0, gust - dt * 0.45);
-  const windBase = parseFloat(ui.wind.value);
+  const windBase = parseFloat(ui.wind.value) + W.storm * 0.55 + Math.min(1, W.rain) * 0.1;
   const breath = 0.5 + 0.5 * Math.sin(t * 0.21) * Math.sin(t * 0.13 + 1.3);
   const windNow = windBase * (0.7 + 0.6 * breath) + gust * 1.3;
   U.uWind.value = lerp(U.uWind.value, clamp(windNow, 0, 1.8), dt * 2);
-  if (opts.leaves && fallingLeaves) updateLeaves(dt, t, 0.4 + windNow * 5.5);
+  const ws = 0.4 + windNow * 5.5;
+  if (opts.leaves && fallingLeaves) updateLeaves(dt, t, ws);
+  updatePrecip(_v.set(windDir.x * ws, 0, windDir.z * ws));
 
   // flames & lights
   for (const f of flames) {
@@ -1723,7 +2016,7 @@ function frame() {
   // birds (only in daylight)
   for (const bd of birds) {
     const u = bd.userData, a = t * u.sp + u.ph;
-    bd.visible = state.dayK > 0.15;
+    bd.visible = state.dayK > 0.15 && W.rain < 0.3 && W.snow < 0.4 && W.fog < 0.6;
     bd.position.set(u.c.x + Math.cos(a) * u.R, u.c.y + Math.sin(a * 2.3) * 4, u.c.z + Math.sin(a) * u.R);
     bd.rotation.y = Math.atan2(-Math.sin(a) * Math.sign(u.sp), Math.cos(a) * Math.sign(u.sp));
     const flap = Math.sin(t * u.fl + u.ph) * 0.65 * (Math.sin(t * 0.7 + u.ph) > -0.3 ? 1 : 0.1);
@@ -1740,7 +2033,7 @@ function frame() {
   if (camera.position.y < 2) camera.position.y = 2;
   scene.userData.sky.position.copy(camera.position);
 
-  audio.update(dt, t, windBase, gust, state.nightK);
+  audio.update(dt, t, windBase, gust, state.nightK, W);
   composer.render();
   requestAnimationFrame(frame);
 }
@@ -1756,6 +2049,8 @@ window.addEventListener('resize', () => {
    ===================================================================== */
 (async () => {
   await build();
+  setSeason('autumn', true);
+  setWeather('clear');
   applyTime(parseFloat(ui.time.value), true);
   ui.wind.dispatchEvent(new Event('input'));
   renderer.compile(scene, camera);
@@ -1766,6 +2061,8 @@ window.addEventListener('resize', () => {
     if (d.cam) camera.position.set(...d.cam);
     if (d.target) controls.target.set(...d.target);
     if (d.t !== undefined) { ui.time.value = d.t; applyTime(d.t); }
+    if (d.season) setSeason(d.season);
+    if (d.weather) setWeather(d.weather);
     controls.update();
   });
   clock.start();

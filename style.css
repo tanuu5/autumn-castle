@@ -172,6 +172,13 @@ input[type="range"]::-moz-range-thumb {
   transition: background 0.25s, border-color 0.25s, color 0.25s;
 }
 .chips button { font-size: 12px; padding: 3px 10px; }
+.row.seg { grid-template-columns: 34px 1fr; margin: 6px 0; }
+.chips.inline { margin: 0; flex-wrap: wrap; gap: 5px; }
+.chips.inline button { min-width: 34px; }
+.chips button.on {
+  background: linear-gradient(135deg, rgba(217,118,58,0.55), rgba(227,183,101,0.4));
+  border-color: rgba(227, 183, 101, 0.7);
+}
 .chips button:hover, .btns button:hover { background: rgba(227, 183, 101, 0.16); }
 
 .btns {
@@ -225,6 +232,8 @@ kbd {
   #title p { font-size: 14px; }
   #panel { left: 16px; right: 16px; bottom: 16px; width: auto; padding: 10px 14px 10px; }
   .chips { margin: 0 0 6px; flex-wrap: wrap; }
+  .row.seg { margin: 3px 0; }
+  .chips.inline button { padding: 2px 8px; }
   .btns { margin-top: 8px; padding-top: 8px; gap: 5px; }
   .btns button { font-size: 12px; padding: 5px 10px; }
   #hint { display: none; }
