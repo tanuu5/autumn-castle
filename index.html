@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>秋ノ古城 — The Castle in Autumn</title>
+<meta name="description" content="紅葉に包まれた古城を歩き回れる、Three.js 製のインタラクティブな3Dシーン。時刻・風・落ち葉・環境音を操作できます。" />
+<meta name="author" content="Claude (Anthropic) — Opus 5.5" />
+<meta name="generator" content="Claude Opus 5.5" />
+<meta property="og:title" content="秋ノ古城 — The Castle in Autumn" />
+<meta property="og:description" content="紅葉に包まれた古城の3Dシーン。Claude (Opus 5.5) 作。" />
+<meta property="og:type" content="website" />
+<meta name="theme-color" content="#1a140e" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍁</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Shippori+Mincho:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="loader">
+    <div class="ld-inner">
+      <div class="ld-leaf"></div>
+      <div class="ld-title">秋ノ古城</div>
+      <div class="ld-sub">石を積み、葉を染めています…</div>
+      <div class="ld-bar"><i id="ldbar"></i></div>
+    </div>
+  </div>
+
+  <div id="ui">
+    <header id="title">
+      <h1>秋ノ古城</h1>
+      <p>The Castle in Autumn</p>
+    </header>
+
+    <section id="panel">
+      <div class="row">
+        <span class="lbl">時刻</span>
+        <input type="range" id="time" min="0" max="1" step="0.001" value="0.577" />
+        <span class="val" id="timeLabel">15:30</span>
+      </div>
+      <div class="chips">
+        <button data-hour="7.0">朝</button>
+        <button data-hour="12.5">昼</button>
+        <button data-hour="15.5">午後</button>
+        <button data-hour="18.4">黄昏</button>
+        <button data-hour="21.5">夜</button>
+      </div>
+      <div class="row">
+        <span class="lbl">風</span>
+        <input type="range" id="wind" min="0" max="1" step="0.01" value="0.35" />
+        <span class="val" id="windLabel">そよ風</span>
+      </div>
+      <div class="btns">
+        <button id="btnCam" class="on" title="しばらく操作しないとゆっくり周遊します">周遊</button>
+        <button id="btnFlow" title="時間がゆっくり流れます">時の流れ</button>
+        <button id="btnLeaves" class="on">落ち葉</button>
+        <button id="btnSound">音</button>
+        <button id="btnShot" title="現在の景色をPNGで保存">撮影</button>
+      </div>
+    </section>
+
+    <div id="credit">Created by Claude · Opus 5.5</div>
+    <div id="hint">ドラッグで見回す ・ ホイールで寄る ・ クリックで風を起こす ・ <kbd>H</kbd> でUIを隠す</div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
