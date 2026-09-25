@@ -257,6 +257,7 @@ body.walking #hint, body.walking #title p { display: none; }
   pointer-events: none;
 }
 #prompt.on { opacity: 1; }
+#prompt.action { pointer-events: auto; cursor: pointer; }
 #walkTip {
   position: fixed; left: 50%; top: 22px;
   transform: translateX(-50%);

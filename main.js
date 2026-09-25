@@ -437,7 +437,7 @@ const leafSpawnPoints = [];
 let materials = {};
 const TX = {}; // textures shared with the interior
 // collision data for first-person walking outside
-const WALK = { outlineR: null, rails: [], circles: [], trunks: [] };
+const WALK = { outlineR: null, rails: [], circles: [], trunks: [], perches: [] };
 
 // castle layout constants
 const CX = -8, CZ = -12, PRX = 58, PRZ = 44; // plateau
@@ -773,6 +773,7 @@ async function build() {
     for (let i = 0; i < n; i++) { const t = (i + 0.5) / n; balusters.push(new THREE.Vector3(lerp(a.x, c.x, t), a.y + 0.14, lerp(a.z, c.z, t))); }
   };
   const pedestal = (p, withLamp = false, urn = false) => {
+    if (!withLamp && !urn) WALK.perches.push({ x: p.x, y: p.y + 1.2, z: p.z });
     decor.add(new THREE.BoxGeometry(0.62, 1.1, 0.62), trimMat, M(p.x, p.y + 0.55, p.z));
     decor.add(new THREE.BoxGeometry(0.78, 0.14, 0.78), trimMat, M(p.x, p.y + 1.13, p.z));
     if (urn) {
@@ -828,6 +829,7 @@ async function build() {
   // lanterns
   lampSpots.forEach((p, i) => {
     WALK.circles.push([p.x, p.z, 0.45]);
+    WALK.perches.push({ x: p.x, y: p.y + 2.3 + 0.86, z: p.z });
     const hPost = 2.3;
     decor.add(new THREE.CylinderGeometry(0.06, 0.09, hPost, 8), ironMat, M(p.x, p.y + hPost / 2, p.z));
     decor.add(new THREE.BoxGeometry(0.4, 0.5, 0.4), lampMat, M(p.x, p.y + hPost + 0.25, p.z));
@@ -896,6 +898,7 @@ async function build() {
   buildMist();
   buildPrecip();
 
+  buildCreatures();
   setProgress(1);
 }
 
@@ -2383,6 +2386,39 @@ const audio = (() => {
       g.gain.setTargetAtTime(0.5, t0 + 0.3, 0.3); g.gain.setTargetAtTime(0, t0 + 1.2, 0.9);
       src.connect(lp).connect(g).connect(master); src.start(t0, Math.random() * 2); src.stop(t0 + 4.5);
     },
+    meow() {
+      if (!running) return;
+      const t0 = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+      const f1 = ctx.createBiquadFilter(), f2 = ctx.createBiquadFilter();
+      o.type = 'sawtooth'; f1.type = 'bandpass'; f1.frequency.value = 1100; f1.Q.value = 3; f2.type = 'bandpass'; f2.frequency.value = 2500; f2.Q.value = 4;
+      const b = 480 + Math.random() * 120;
+      o.frequency.setValueAtTime(b, t0); o.frequency.linearRampToValueAtTime(b * 1.45, t0 + 0.16); o.frequency.linearRampToValueAtTime(b * 1.05, t0 + 0.55);
+      f1.frequency.setValueAtTime(700, t0); f1.frequency.linearRampToValueAtTime(1400, t0 + 0.2); f1.frequency.linearRampToValueAtTime(800, t0 + 0.55);
+      g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.16, t0 + 0.05); g.gain.setValueAtTime(0.16, t0 + 0.35); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.62);
+      o.connect(f1).connect(g); o.connect(f2).connect(g); g.connect(master); o.start(t0); o.stop(t0 + 0.7);
+    },
+    purr(dur) {
+      if (!running) return;
+      const t0 = ctx.currentTime, src = ctx.createBufferSource(); src.buffer = brownBuf; src.loop = true;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 260;
+      const am = ctx.createGain(); am.gain.value = 0.5;
+      const lfo = ctx.createOscillator(); lfo.frequency.value = 24; const depth = ctx.createGain(); depth.gain.value = 0.5;
+      lfo.connect(depth).connect(am.gain);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.9, t0 + 0.4); g.gain.setValueAtTime(0.9, t0 + dur - 0.6); g.gain.linearRampToValueAtTime(0, t0 + dur);
+      src.connect(lp).connect(am).connect(g).connect(master); src.start(t0); lfo.start(t0); src.stop(t0 + dur + 0.1); lfo.stop(t0 + dur + 0.1);
+    },
+    hoot() {
+      if (!running) return;
+      const t0 = ctx.currentTime;
+      [[0, 0.42, 1], [0.75, 0.14, 0.9], [0.95, 0.14, 0.95], [1.15, 0.6, 1]].forEach(([at, len, k]) => {
+        const o = ctx.createOscillator(), g = ctx.createGain(), lp = ctx.createBiquadFilter();
+        o.type = 'triangle'; lp.type = 'lowpass'; lp.frequency.value = 900;
+        const st = t0 + at, f = 370 * k;
+        o.frequency.setValueAtTime(f * 1.04, st); o.frequency.linearRampToValueAtTime(f * 0.94, st + len);
+        g.gain.setValueAtTime(0, st); g.gain.linearRampToValueAtTime(0.09, st + 0.05); g.gain.setValueAtTime(0.09, st + len * 0.7); g.gain.exponentialRampToValueAtTime(0.0001, st + len);
+        o.connect(lp).connect(g).connect(master); o.start(st); o.stop(st + len + 0.05);
+      });
+    },
     step(kind) {
       if (!running) return;
       const t0 = ctx.currentTime;
@@ -2526,7 +2562,8 @@ function updateWalk(dt) {
   let msg = '';
   if (!inside && Math.hypot(walk.x - DOOR.x, walk.z - 10) < 6) msg = '扉へ進むと城の中へ';
   if (inside && walk.z > -5 && Math.abs(walk.x) < 3) msg = '扉へ進むと外へ';
-  if (hud.prompt.textContent !== msg) { hud.prompt.textContent = msg; hud.prompt.classList.toggle('on', !!msg); }
+  if (!msg && !inside) msg = creaturePrompt();
+  if (hud.prompt.textContent !== msg) { hud.prompt.textContent = msg; hud.prompt.classList.toggle('on', !!msg); hud.prompt.classList.toggle('action', msg.includes('猫')); }
   // camera
   walk.bob += moved * 2.2;
   const g = inside ? interior.ground(walk.x, walk.z) : groundOut(walk.x, walk.z);
@@ -2583,6 +2620,328 @@ const joyEnd = (e) => { if (e.pointerId !== walk.joy.id) return; walk.joy = { x:
 hud.joy.addEventListener('pointerup', joyEnd); hud.joy.addEventListener('pointercancel', joyEnd);
 document.getElementById('btnExitWalk').addEventListener('click', () => exitWalk());
 if (isTouch) hud.tip.textContent = '左のスティックで移動／画面をドラッグして見回す';
+
+/* =====================================================================
+   creatures: a black cat and an owl
+   ===================================================================== */
+const CAT_SHELTER = { x: -10.1, z: 10.9 }; // curled up beside the left brazier
+const FORECOURT = { x0: -19, x1: 9, z0: 11, z1: 23.5 };
+const sph = (mat, sx, sy, sz, seg = 14) => {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(1, seg, Math.max(8, seg - 4)), mat);
+  m.scale.set(sx, sy, sz); m.castShadow = true; return m;
+};
+function makeFeatherTexture(snowy) {
+  const S = 128, c = makeCanvas(S), g = c.getContext('2d'), r = mulberry32(snowy ? 3 : 4);
+  g.fillStyle = snowy ? '#f2f1ec' : '#6e4c2e'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < (snowy ? 90 : 260); i++) {
+    const x = r() * S, y = r() * S, w = 3 + r() * 6;
+    g.strokeStyle = snowy ? `rgba(40,40,45,${0.35 + r() * 0.4})` : r() < 0.5 ? `rgba(30,18,8,${0.3 + r() * 0.5})` : `rgba(215,180,130,${0.3 + r() * 0.4})`;
+    g.lineWidth = 1.2 + r();
+    g.beginPath(); g.moveTo(x - w, y - w * 0.5); g.lineTo(x, y); g.lineTo(x + w, y - w * 0.5); g.stroke();
+  }
+  return toTex(c);
+}
+function makeHeartTexture() {
+  const c = makeCanvas(64), g = c.getContext('2d');
+  g.fillStyle = '#ff8fb0'; g.translate(32, 36);
+  g.beginPath(); g.moveTo(0, 18); g.bezierCurveTo(-30, -2, -18, -26, 0, -10); g.bezierCurveTo(18, -26, 30, -2, 0, 18); g.fill();
+  return toTex(c, true, false);
+}
+
+const cat = { x: -8, z: 18, yaw: 2.4, state: 'sit', timer: 4, target: null, speed: 0, ph: 0, sit: 1, lie: 0, walkK: 0, headYaw: 0, headPitch: 0, blink: 0, blinkT: 2, closed: 0, still: 0, lastPX: 0, lastPZ: 0, meowT: 8 };
+const owl = { state: 'perch', timer: 6, x: 0, y: 0, z: 0, yaw: 0, from: null, to: null, u: 0, dur: 1, headYaw: 0, headTarget: 0, tilt: 0, blink: 0, blinkT: 3, sleep: 0, fly: 0, walkLeft: 0, walkDir: 0, hootT: 10, perch: null, snowy: false };
+let catParts, owlParts, hearts = [];
+
+function buildCreatures() {
+  /* ---- cat ---- */
+  const fur = new THREE.MeshStandardMaterial({ color: 0x2a2624, roughness: 0.8 });
+  const pink = new THREE.MeshStandardMaterial({ color: 0xc98b8b, roughness: 0.6 });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffc848, emissive: 0xffa020, emissiveIntensity: 0.4, roughness: 0.15 });
+  const black = new THREE.MeshBasicMaterial({ color: 0x050505 });
+  const root = new THREE.Group(), body = new THREE.Group();
+  root.add(body); body.position.y = 0.24;
+  body.add(sph(fur, 0.12, 0.115, 0.25));
+  const chest = sph(fur, 0.1, 0.11, 0.12); chest.position.set(0, 0.03, 0.17); body.add(chest);
+  const head = new THREE.Group(); head.position.set(0, 0.13, 0.27); body.add(head);
+  head.add(sph(fur, 0.085, 0.075, 0.08));
+  const muzzle = sph(fur, 0.038, 0.027, 0.032); muzzle.position.set(0, -0.022, 0.066); head.add(muzzle);
+  const nose = sph(pink, 0.009, 0.007, 0.006, 8); nose.position.set(0, -0.012, 0.098); head.add(nose);
+  for (const s of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.034, 0.075, 4), fur); ear.position.set(s * 0.048, 0.07, -0.01); ear.rotation.set(-0.15, Math.PI / 4, s * -0.3); ear.castShadow = true; head.add(ear);
+  }
+  const eyes = [];
+  for (const s of [-1, 1]) {
+    const e = sph(eyeMat, 0.016, 0.016, 0.009, 10); e.position.set(s * 0.033, 0.012, 0.068); head.add(e);
+    const p = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.022, 0.004), black); p.position.set(0, 0, 0.9); e.add(p);
+    eyes.push(e);
+  }
+  const legGeo = new THREE.CylinderGeometry(0.022, 0.018, 0.22, 8).translate(0, -0.11, 0);
+  const legs = [[-0.06, 0.17], [0.06, 0.17], [-0.065, -0.16], [0.065, -0.16]].map(([x, z], i) => {
+    const pv = new THREE.Group(); pv.position.set(x, -0.02, z); body.add(pv);
+    const l = new THREE.Mesh(legGeo, fur); l.castShadow = true; pv.add(l);
+    const paw = sph(fur, 0.026, 0.018, 0.032, 8); paw.position.set(0, -0.215, 0.012); pv.add(paw);
+    if (i >= 2) { const th = sph(fur, 0.05, 0.085, 0.08); th.position.set(0, -0.02, 0); pv.add(th); }
+    return pv;
+  });
+  const tail = [];
+  for (let i = 0; i < 18; i++) { const s = sph(fur, 1, 1, 1, 8); const rr = 0.024 - i * 0.0006; s.scale.setScalar(rr); s.castShadow = false; root.add(s); tail.push(s); }
+  root.scale.setScalar(1.05);
+  scene.add(root);
+  catParts = { root, body, head, legs, tail, eyes, eyeMat };
+
+  const heartTex = makeHeartTexture();
+  for (let i = 0; i < 6; i++) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: heartTex, transparent: true, depthWrite: false, opacity: 0 }));
+    sp.scale.setScalar(0.12); sp.visible = false; scene.add(sp);
+    hearts.push({ sp, life: 0 });
+  }
+
+  /* ---- owl ---- */
+  const brownTex = makeFeatherTexture(false), snowTex = makeFeatherTexture(true);
+  const plume = new THREE.MeshStandardMaterial({ map: brownTex, roughness: 0.95 });
+  const bellyMat = new THREE.MeshStandardMaterial({ map: brownTex, color: 0xe8cfa4, roughness: 0.95 });
+  const faceMat = new THREE.MeshStandardMaterial({ color: 0xd4bb92, roughness: 0.9 });
+  const oEye = new THREE.MeshStandardMaterial({ color: 0xffb020, emissive: 0xff9a10, emissiveIntensity: 0.3, roughness: 0.1 });
+  const beakMat = new THREE.MeshStandardMaterial({ color: 0x3a3226, roughness: 0.5 });
+  const footMat = new THREE.MeshStandardMaterial({ color: 0x8a7a55, roughness: 0.7 });
+  const oroot = new THREE.Group(), obody = new THREE.Group(); oroot.add(obody);
+  const trunk = sph(plume, 0.13, 0.19, 0.12); trunk.position.y = 0.2; obody.add(trunk);
+  const belly = sph(bellyMat, 0.1, 0.155, 0.08); belly.position.set(0, 0.18, 0.052); obody.add(belly);
+  const otail = sph(plume, 0.07, 0.022, 0.1); otail.position.set(0, 0.05, -0.1); otail.rotation.x = -0.6; obody.add(otail);
+  const ohead = new THREE.Group(); ohead.position.set(0, 0.395, 0); obody.add(ohead);
+  ohead.add(sph(plume, 0.12, 0.105, 0.11));
+  const disc = sph(faceMat, 0.1, 0.085, 0.03); disc.position.set(0, -0.005, 0.085); ohead.add(disc);
+  const lids = [];
+  for (const s of [-1, 1]) {
+    const e = sph(oEye, 0.027, 0.027, 0.018, 12); e.position.set(s * 0.042, 0.008, 0.1); ohead.add(e);
+    const p = sph(black, 0.013, 0.013, 0.006, 8); p.position.set(s * 0.042, 0.008, 0.117); ohead.add(p);
+    const lid = sph(faceMat, 0.03, 0.03, 0.02, 10); lid.position.set(s * 0.042, 0.008, 0.103); ohead.add(lid); lids.push(lid);
+    const tuft = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.065, 4), plume); tuft.position.set(s * 0.06, 0.085, 0.01); tuft.rotation.z = s * -0.35; ohead.add(tuft);
+  }
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.012, 0.034, 6), beakMat); beak.position.set(0, -0.028, 0.113); beak.rotation.x = Math.PI + 0.3; ohead.add(beak);
+  const wings = [-1, 1].map((s) => {
+    const pv = new THREE.Group(); pv.position.set(s * 0.115, 0.31, -0.01); obody.add(pv);
+    const w = sph(plume, 0.028, 0.17, 0.1); w.position.y = -0.14; pv.add(w);
+    return pv;
+  });
+  for (const s of [-1, 1]) { const f = sph(footMat, 0.028, 0.016, 0.035, 8); f.position.set(s * 0.045, 0.012, 0.045); obody.add(f); }
+  scene.add(oroot);
+  owlParts = { root: oroot, body: obody, head: ohead, wings, lids, plume, bellyMat, faceMat, brownTex, snowTex, oEye };
+  const start = WALK.perches.reduce((best, p) => (Math.hypot(p.x + 6, p.z - 24) < Math.hypot(best.x + 6, best.z - 24) ? p : best), WALK.perches[0]);
+  owl.perch = start; owl.x = start.x; owl.y = start.y; owl.z = start.z; owl.yaw = Math.PI;
+}
+
+function randomCourtPoint() {
+  for (let i = 0; i < 30; i++) {
+    const x = lerp(FORECOURT.x0, FORECOURT.x1, Math.random()), z = lerp(FORECOURT.z0, FORECOURT.z1, Math.random());
+    if (canStandOut(x, z)) return { x, z };
+  }
+  return { x: -6, z: 18 };
+}
+function playerOutside() { return walk.on && walk.place === 'outside'; }
+function catNear() { return playerOutside() && Math.hypot(walk.x - cat.x, walk.z - cat.z) < 1.9 && cat.state !== 'walk'; }
+function petCat() {
+  if (!catNear()) return;
+  cat.state = 'pet'; cat.timer = 4.5; cat.target = null;
+  audio.purr(4.2); if (Math.random() < 0.5) audio.meow();
+  hearts.forEach((h, i) => { h.life = 1.6 + i * 0.25; h.sp.visible = true; h.ox = (Math.random() - 0.5) * 0.3; });
+}
+function wantsShelter() { return W.rain > 0.3 || W.snow > 0.5 || state.nightK > 0.85; }
+
+function updateCat(dt, t) {
+  const P = catParts;
+  // player tracking
+  const pOut = playerOutside();
+  const pd = pOut ? Math.hypot(walk.x - cat.x, walk.z - cat.z) : 99;
+  if (pOut) {
+    const moved = Math.hypot(walk.x - cat.lastPX, walk.z - cat.lastPZ);
+    cat.still = moved < 0.01 ? cat.still + dt : 0; cat.lastPX = walk.x; cat.lastPZ = walk.z;
+  } else cat.still = 0;
+  const shelter = wantsShelter();
+  cat.timer -= dt;
+  if (cat.state === 'walk' || cat.state === 'approach') {
+    const tg = cat.state === 'approach' ? { x: walk.x - Math.sin(walk.yaw) * 0.8, z: walk.z - Math.cos(walk.yaw) * 0.8 } : cat.target;
+    const dx = tg.x - cat.x, dz = tg.z - cat.z, d = Math.hypot(dx, dz);
+    const want = Math.atan2(dx, dz);
+    let dy = want - cat.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+    cat.yaw += clamp(dy, -3 * dt, 3 * dt);
+    cat.speed = lerp(cat.speed, d > 3 && cat.state === 'approach' ? 1.1 : 0.45, dt * 3);
+    const nx = cat.x + Math.sin(cat.yaw) * cat.speed * dt, nz = cat.z + Math.cos(cat.yaw) * cat.speed * dt;
+    const free = canStandOut(nx, nz) || Math.hypot(nx - CAT_SHELTER.x, nz - CAT_SHELTER.z) < 0.6;
+    if (free) { cat.x = nx; cat.z = nz; } else if (cat.state === 'walk' && !shelter) cat.target = randomCourtPoint();
+    if (d < (cat.state === 'approach' ? 0.25 : 0.2) || cat.timer < -25) {
+      if (cat.state === 'approach') { cat.state = 'sit'; cat.timer = 6 + Math.random() * 6; }
+      else if (shelter && Math.hypot(cat.x - CAT_SHELTER.x, cat.z - CAT_SHELTER.z) < 0.5) { cat.state = 'lie'; cat.timer = 30; }
+      else { cat.state = Math.random() < 0.25 ? 'lie' : 'sit'; cat.timer = cat.state === 'lie' ? 12 + Math.random() * 15 : 3 + Math.random() * 6; }
+    }
+    if (cat.state === 'approach' && pd > 9) { cat.state = 'sit'; cat.timer = 3; }
+  } else if (cat.timer <= 0 || (shelter && cat.state !== 'pet' && Math.hypot(cat.x - CAT_SHELTER.x, cat.z - CAT_SHELTER.z) > 0.6)) {
+    cat.state = 'walk'; cat.timer = 0;
+    cat.target = shelter ? { ...CAT_SHELTER } : randomCourtPoint();
+  }
+  // curiosity: come to a player who stands still nearby
+  if (!shelter && pOut && cat.state !== 'approach' && cat.state !== 'pet' && pd < 7 && pd > 1.4 && cat.still > 2.5 && Math.random() < dt * 0.4) {
+    cat.state = 'approach'; cat.timer = 0;
+  }
+  if (pOut && pd < 5 && (cat.meowT -= dt) < 0) { cat.meowT = 10 + Math.random() * 15; if (cat.state !== 'lie') audio.meow(); }
+
+  // pose blending
+  const moving = cat.state === 'walk' || cat.state === 'approach';
+  cat.walkK = lerp(cat.walkK, moving ? 1 : 0, dt * 6);
+  cat.sit = lerp(cat.sit, cat.state === 'sit' || cat.state === 'pet' ? 1 : 0, dt * 4);
+  cat.lie = lerp(cat.lie, cat.state === 'lie' ? 1 : 0, dt * 3);
+  cat.ph += dt * cat.speed * 11 * cat.walkK;
+  const g = groundOut(cat.x, cat.z);
+  P.root.position.set(cat.x, g, cat.z); P.root.rotation.y = cat.yaw;
+  const sw = Math.sin(cat.ph) * 0.55 * cat.walkK;
+  P.body.rotation.x = -0.55 * cat.sit;
+  P.body.position.set(0, 0.24 - 0.035 * cat.sit - 0.14 * cat.lie + Math.abs(Math.sin(cat.ph)) * 0.012 * cat.walkK, -0.06 * cat.sit);
+  const [fl, fr, bl, br] = P.legs;
+  fl.rotation.x = sw + 0.55 * cat.sit - 1.3 * cat.lie; br.rotation.x = sw + 1.25 * cat.sit + 1.3 * cat.lie;
+  fr.rotation.x = -sw + 0.55 * cat.sit - 1.3 * cat.lie; bl.rotation.x = -sw + 1.25 * cat.sit + 1.3 * cat.lie;
+  // head: look at the player when close, else glance around
+  let hy = Math.sin(t * 0.4 + 1.3) * 0.5 * (1 - cat.walkK), hp = 0;
+  if (pOut && pd < 3.5) {
+    let a = Math.atan2(walk.x - cat.x, walk.z - cat.z) - cat.yaw; a = Math.atan2(Math.sin(a), Math.cos(a));
+    hy = clamp(a, -1.1, 1.1); hp = -0.35;
+  }
+  cat.headYaw = lerp(cat.headYaw, hy, dt * 4); cat.headPitch = lerp(cat.headPitch, hp + 0.55 * cat.sit * 0.8 + 0.3 * cat.lie, dt * 4);
+  P.head.rotation.set(cat.headPitch, cat.headYaw, cat.state === 'pet' ? Math.sin(t * 2) * 0.15 : 0);
+  // eyes: blink, sleep, content squint when petted
+  cat.blinkT -= dt; if (cat.blinkT < 0) { cat.blink = 0.15; cat.blinkT = 2 + Math.random() * 4; }
+  cat.blink = Math.max(0, cat.blink - dt);
+  cat.closed = lerp(cat.closed, cat.state === 'lie' && cat.timer < 25 ? 1 : cat.state === 'pet' ? 0.8 : cat.blink > 0 ? 1 : 0, dt * 10);
+  for (const e of P.eyes) e.scale.y = 0.016 * (1 - cat.closed * 0.9);
+  P.eyeMat.emissiveIntensity = 0.25 + state.nightK * 3.5 * (1 - cat.closed);
+  // tail: upright wave when walking, curled on the ground when sitting or lying
+  const rest = Math.max(cat.sit, cat.lie);
+  // tail base = back of the torso, following the body's pitch
+  const rx = P.body.rotation.x, cp = Math.cos(rx), sp = Math.sin(rx);
+  let px = 0, py = P.body.position.y + 0.02 * cp + 0.24 * sp, pz = P.body.position.z + 0.02 * sp - 0.24 * cp;
+  let yawA = 0;
+  P.tail.forEach((s, i) => {
+    const u = i / 17;
+    const pitch = lerp(lerp(1.25, 0.35, u) + Math.sin(t * 3 - i * 0.33) * 0.15, -0.05, rest);
+    yawA = lerp(Math.sin(t * (cat.state === 'pet' ? 1.2 : 2.2) - i * 0.28) * 0.35 * u, u * 2.4, rest);
+    px += Math.sin(yawA) * Math.cos(pitch) * 0.026;
+    py += Math.sin(pitch) * 0.026;
+    pz -= Math.cos(yawA) * Math.cos(pitch) * 0.026;
+    s.position.set(px, Math.max(0.018, py), pz);
+  });
+  // hearts
+  for (const h of hearts) {
+    if (h.life <= 0) { h.sp.visible = false; continue; }
+    h.life -= dt;
+    const a = clamp(1.6 - h.life, 0, 1.6);
+    h.sp.position.set(cat.x + h.ox, g + 0.45 + a * 0.35, cat.z);
+    h.sp.material.opacity = clamp(h.life, 0, 1) * clamp(a * 4, 0, 1);
+  }
+}
+
+function owlPerchCandidates() {
+  return WALK.perches.filter((p) => p !== owl.perch && Math.hypot(p.x - owl.x, p.z - owl.z) > 3 && Math.hypot(p.x - owl.x, p.z - owl.z) < 45);
+}
+function owlFlyTo(dest, then) {
+  owl.state = 'fly'; owl.from = { x: owl.x, y: owl.y, z: owl.z }; owl.to = dest; owl.u = 0;
+  owl.dur = clamp(Math.hypot(dest.x - owl.x, dest.z - owl.z) / 5, 1.1, 6); owl.then = then;
+}
+function updateOwl(dt, t) {
+  const P = owlParts;
+  const dayK = state.dayK;
+  const pOut = playerOutside();
+  const pd = pOut ? Math.hypot(walk.x - owl.x, walk.z - owl.z) : 99;
+  owl.timer -= dt;
+  if (owl.state === 'perch') {
+    owl.sleep = lerp(owl.sleep, dayK > 0.6 && W.storm < 0.5 ? 1 : 0, dt * 0.8);
+    if (pd < 1.4 && owl.sleep < 0.8) owl.timer = 0; // too close: take off
+    if (owl.timer <= 0) {
+      const c = owlPerchCandidates();
+      if (Math.random() < 0.35 && owl.sleep < 0.5) {
+        // land on the path and walk a little
+        const tt = 8 + Math.random() * 22;
+        const spot = { x: VS.x + VDIR.x * tt, y: 0.05, z: VS.z + VDIR.z * tt };
+        owlFlyTo(spot, 'walk');
+      } else if (c.length) {
+        const p = c[Math.floor(Math.random() * c.length)];
+        owlFlyTo(p, 'perch');
+      }
+      owl.perch = null;
+    }
+    // head swivels in quick owl-like snaps
+    if (Math.random() < dt * (owl.sleep > 0.5 ? 0.05 : 0.6)) owl.headTarget = (Math.random() - 0.5) * 4.4;
+    if (pOut && pd < 5 && owl.sleep < 0.5) {
+      let a = Math.atan2(walk.x - owl.x, walk.z - owl.z) - owl.yaw; a = Math.atan2(Math.sin(a), Math.cos(a));
+      owl.headTarget = clamp(a, -2.3, 2.3);
+    }
+    if ((owl.hootT -= dt) < 0) { owl.hootT = 9 + Math.random() * 16; if (state.nightK > 0.4 && owl.sleep < 0.5) audio.hoot(); }
+  } else if (owl.state === 'fly') {
+    owl.u = Math.min(1, owl.u + dt / owl.dur);
+    const e = owl.u * owl.u * (3 - 2 * owl.u), f = owl.from, to = owl.to;
+    const d = Math.hypot(to.x - f.x, to.z - f.z);
+    owl.x = lerp(f.x, to.x, e); owl.z = lerp(f.z, to.z, e);
+    owl.y = lerp(f.y, to.y, e) + Math.sin(Math.PI * owl.u) * Math.min(4, 0.8 + d * 0.25);
+    owl.yaw = Math.atan2(to.x - f.x, to.z - f.z);
+    owl.headTarget = 0;
+    if (owl.u >= 1) {
+      owl.x = to.x; owl.y = to.y; owl.z = to.z;
+      if (owl.then === 'walk') { owl.state = 'walk'; owl.walkLeft = 2 + Math.random() * 4; owl.walkDir = Math.random() < 0.5 ? 1 : -1; owl.yaw = Math.atan2(VDIR.x * owl.walkDir, VDIR.z * owl.walkDir); }
+      else { owl.state = 'perch'; owl.perch = to; owl.timer = dayK > 0.6 ? 50 + Math.random() * 60 : 7 + Math.random() * 12; }
+    }
+  } else if (owl.state === 'walk') {
+    const sp = 0.32 * dt;
+    const nx = owl.x + Math.sin(owl.yaw) * sp, nz = owl.z + Math.cos(owl.yaw) * sp;
+    if (segDist(nx, nz, [VS.x, VS.z, VE.x, VE.z]) < 2.6 && Math.hypot(nx - VS.x, nz - VS.z) > 6) { owl.x = nx; owl.z = nz; owl.walkLeft -= sp; }
+    else owl.walkLeft = 0;
+    if (Math.random() < dt * 0.3) owl.headTarget = (Math.random() - 0.5) * 3;
+    if (owl.walkLeft <= 0 || pd < 1.6) {
+      const c = owlPerchCandidates();
+      if (c.length) owlFlyTo(c[Math.floor(Math.random() * c.length)], 'perch');
+    }
+  }
+  // pose
+  const flying = owl.state === 'fly';
+  owl.fly = lerp(owl.fly, flying ? 1 : 0, dt * 8);
+  const walking = owl.state === 'walk';
+  P.root.position.set(owl.x, owl.y + (walking ? Math.abs(Math.sin(t * 9)) * 0.02 : 0), owl.z);
+  P.root.rotation.set(0, owl.yaw, walking ? Math.sin(t * 9) * 0.12 : 0);
+  P.body.rotation.x = 0.9 * owl.fly;
+  const puff = 1 + 0.06 * owl.sleep;
+  P.body.scale.set(puff, puff * (1 - 0.04 * owl.sleep), puff);
+  let dh = owl.headTarget - owl.headYaw;
+  owl.headYaw += clamp(dh, -9 * dt, 9 * dt);
+  owl.tilt = lerp(owl.tilt, Math.sin(t * 0.7) * 0.25 * (1 - owl.sleep) * (Math.abs(dh) < 0.05 ? 1 : 0), dt * 3);
+  P.head.rotation.set(-0.8 * owl.fly, owl.headYaw * (1 - owl.fly), owl.tilt);
+  const flapping = owl.u < 0.35 || owl.u > 0.8;
+  const flap = flying ? Math.sin(t * (flapping ? 18 : 5)) * (flapping ? 0.7 : 0.15) : 0;
+  P.wings.forEach((w, i) => {
+    const s = i === 0 ? -1 : 1;
+    w.rotation.z = s * (lerp(0.12, 1.45, owl.fly) + flap);
+    w.children[0].scale.y = lerp(0.17, 0.24, owl.fly);
+  });
+  owl.blinkT -= dt; if (owl.blinkT < 0) { owl.blink = 0.18; owl.blinkT = 3 + Math.random() * 5; }
+  owl.blink = Math.max(0, owl.blink - dt);
+  const lid = Math.max(owl.sleep > 0.5 ? 1 : 0, owl.blink > 0 ? 1 : 0);
+  for (const l of P.lids) l.scale.y = lerp(l.scale.y, lid ? 0.03 : 0.002, dt * 14);
+  P.oEye.emissiveIntensity = 0.2 + state.nightK * 2.5;
+  // snowy owl in winter
+  const snowy = SS.key === 'winter';
+  if (snowy !== owl.snowy) {
+    owl.snowy = snowy;
+    P.plume.map = snowy ? P.snowTex : P.brownTex; P.bellyMat.map = P.plume.map;
+    P.bellyMat.color.set(snowy ? 0xffffff : 0xe8cfa4); P.faceMat.color.set(snowy ? 0xf6f6f2 : 0xd4bb92);
+  }
+}
+function updateCreatures(dt, t) {
+  if (!catParts) return;
+  updateCat(dt, t);
+  updateOwl(dt, t);
+}
+function creaturePrompt() {
+  if (catNear()) return isTouch ? 'ここをタップして猫をなでる' : 'E キーで猫をなでる';
+  return '';
+}
+window.addEventListener('keydown', (e) => { if (walk.on && e.code === 'KeyE') petCat(); });
+hud.prompt.addEventListener('click', () => petCat());
 
 /* =====================================================================
    loop
@@ -2658,6 +3017,7 @@ function frame() {
   scene.userData.sky.position.copy(camera.position);
   const inside = walk.on && walk.place === 'inside';
   if (inside) interior.update(dt, t);
+  updateCreatures(dt, t);
 
   audio.update(dt, t, windBase, gust, state.nightK, W, inside);
   composer.render();
@@ -2692,6 +3052,12 @@ window.addEventListener('resize', () => {
     if (d.pos) { walk.x = d.pos[0]; walk.z = d.pos[1]; }
     if (d.yaw !== undefined) walk.yaw = d.yaw;
     if (d.pitch !== undefined) walk.pitch = d.pitch;
+    if (d.findOwl) {
+      if (owl.state === 'perch') owl.timer = 999;
+      walk.x = owl.x - 1.9; walk.z = owl.z - 1.9;
+      const vx = owl.x - walk.x, vz = owl.z - walk.z;
+      walk.yaw = Math.atan2(-vx, -vz); walk.pitch = Math.atan2(owl.y + 0.25 - 1.7, Math.hypot(vx, vz));
+    }
     if (d.weather) setWeather(d.weather);
     controls.update();
   });
